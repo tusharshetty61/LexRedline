@@ -636,88 +636,34 @@ async function findRange(context, originalText) {
   return null;
 }
 
-async function applyAcceptedChanges() {
-  if (session.acceptedChanges.length === 0) {
-    showCompletionScreen();
-    return;
-  }
+// =============================================================
+// ACCEPT / SKIP — changes applied immediately on Accept
+// =============================================================
+// ACCEPT / SKIP — changes applied immediately on Accept
+// =============================================================
+async function onAccept() {
+  const suggestion = session.clauseSuggestions[session.currentClauseIndex];
+  if (!suggestion) { moveToNext(); return; }
 
-  showScreen('screen-applying');
+  // Disable buttons while writing to Word
+  const btnAccept = document.getElementById('btn-accept');
+  const btnSkip   = document.getElementById('btn-skip');
+  btnAccept.disabled = true;
+  btnSkip.disabled   = true;
+  btnAccept.textContent = 'Applying…';
 
   try {
-    await Word.run(async (context) => {
-      // Enable track changes BEFORE any edits so Word records them properly
-      context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-      await context.sync();
-
-      for (const change of session.acceptedChanges) {
-        try {
-
-          // ── INSERT (missing clause) ──────────────────────────
-          if (change.change_type === 'Insert' || change.original_text === 'MISSING') {
-            const sigSearch = context.document.body.search('IN WITNESS WHEREOF', { matchCase: false });
-            sigSearch.load('items');
-            await context.sync();
-
-            if (sigSearch.items.length > 0) {
-              sigSearch.items[0].insertParagraph(change.suggested_text, 'Before');
-              sigSearch.items[0].insertComment(`[AI REVIEWER — NEW CLAUSE | ${change.applicable_statute || ''}] ${change.issue_summary}`);
-            } else {
-              context.document.body.paragraphs.getLast()
-                .insertParagraph(change.suggested_text, 'After');
-            }
-            await context.sync();
-            continue;
-          }
-
-          // ── FIND original text ───────────────────────────────
-          const range = await findRange(context, change.original_text);
-
-          if (range) {
-            if (change.change_type === 'Delete') {
-              range.insertText('', 'Replace');
-            } else {
-              // Replace — track changes records this as deletion + insertion
-              range.insertText(change.suggested_text, 'Replace');
-            }
-            range.insertComment(`[AI REVIEWER | ${change.applicable_statute || ''}] ${change.issue_summary}`);
-            await context.sync();
-
-          } else {
-            // Original text not locatable — add a comment at end so nothing is lost
-            context.document.body.paragraphs.getLast().insertComment(
-              `[AI REVIEWER — APPLY MANUALLY]\nClause: ${change.clause_name}\n${change.issue_summary}\n\nSUGGESTED:\n${change.suggested_text}`
-            );
-            await context.sync();
-          }
-
-        } catch (clauseErr) {
-          console.warn(`Could not apply "${change.clause_name}":`, clauseErr.message);
-        }
-      }
-
-      context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
-      await context.sync();
-    });
-
-    showCompletionScreen();
-
-  } catch (err) {
-    console.error('Apply changes error:', err);
-    alert('Error applying changes: ' + err.message);
-    showCompletionScreen();
-  }
-}
-
-
-// =============================================================
-// ACCEPT / SKIP / MOVE NEXT
-// =============================================================
-function onAccept() {
-  const suggestion = session.clauseSuggestions[session.currentClauseIndex];
-  if (suggestion) {
+    await applyOneChange(suggestion);
     session.acceptedChanges.push(suggestion);
+  } catch (e) {
+    console.warn('Could not apply change:', e.message);
+    session.acceptedChanges.push(suggestion); // still count it
+  } finally {
+    btnAccept.disabled = false;
+    btnSkip.disabled   = false;
+    btnAccept.textContent = 'Accept change ✓';
   }
+
   moveToNext();
 }
 
@@ -733,8 +679,55 @@ async function moveToNext() {
   if (session.currentClauseIndex < total) {
     await loadClauseCard(session.currentClauseIndex);
   } else {
-    await applyAcceptedChanges();
+    showCompletionScreen();
   }
+}
+
+// Applies a single suggestion to the Word document as a tracked change
+async function applyOneChange(change) {
+  await Word.run(async (context) => {
+    context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+    await context.sync();
+
+    // ── INSERT (missing clause) ──────────────────────────────
+    if (change.change_type === 'Insert' || change.original_text === 'MISSING') {
+      const sigSearch = context.document.body.search('IN WITNESS WHEREOF', { matchCase: false });
+      sigSearch.load('items');
+      await context.sync();
+
+      if (sigSearch.items.length > 0) {
+        sigSearch.items[0].insertParagraph(change.suggested_text, 'Before');
+        sigSearch.items[0].insertComment(`[AI REVIEWER — NEW CLAUSE | ${change.applicable_statute || ''}] ${change.issue_summary}`);
+      } else {
+        context.document.body.paragraphs.getLast()
+          .insertParagraph(change.suggested_text, 'After');
+      }
+      await context.sync();
+
+    } else {
+      // ── FIND + REPLACE / DELETE ────────────────────────────
+      const range = await findRange(context, change.original_text);
+
+      if (range) {
+        if (change.change_type === 'Delete') {
+          range.insertText('', 'Replace');
+        } else {
+          range.insertText(change.suggested_text, 'Replace');
+        }
+        range.insertComment(`[AI REVIEWER | ${change.applicable_statute || ''}] ${change.issue_summary}`);
+        await context.sync();
+      } else {
+        // Can't locate original — leave a comment so nothing is lost
+        context.document.body.paragraphs.getLast().insertComment(
+          `[AI REVIEWER — APPLY MANUALLY]\nClause: ${change.clause_name}\n${change.issue_summary}\n\nSUGGESTED:\n${change.suggested_text}`
+        );
+        await context.sync();
+      }
+    }
+
+    context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+    await context.sync();
+  });
 }
 
 
