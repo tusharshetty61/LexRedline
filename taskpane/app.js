@@ -592,11 +592,6 @@ async function highlightInDocument(originalText, priority) {
   if (!originalText || originalText === 'MISSING') return;
   try {
     await Word.run(async (context) => {
-      // Clear all previous highlights first
-      context.document.body.font.highlightColor = 'None';
-      await context.sync();
-
-      // Reuse the same fallback search logic as applyAcceptedChanges
       const range = await findRange(context, originalText);
       if (range) {
         const p = (priority || 'HIGH').toUpperCase();
