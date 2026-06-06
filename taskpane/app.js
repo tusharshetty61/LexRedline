@@ -625,24 +625,38 @@ async function clearHighlight(originalText) {
 // OFFICE.JS — APPLY ACCEPTED CHANGES AS WORD TRACK CHANGES
 // =============================================================
 async function findRange(context, originalText) {
-  // Try progressively shorter substrings until we get a match.
-  // Needed because the AI sometimes paraphrases instead of quoting verbatim.
-  const lengths = [
-    originalText.length,
-    200, 150, 100, 60
-  ];
-  for (const len of lengths) {
-    if (len > originalText.length) continue;
-    const candidate = originalText.substring(0, len).trim();
-    if (candidate.length < 10) continue;
-    const results = context.document.body.search(candidate, {
+  if (!originalText || originalText.trim().length < 5) return null;
+
+  async function trySearch(candidate) {
+    if (!candidate || candidate.trim().length < 10) return null;
+    const results = context.document.body.search(candidate.trim(), {
       matchCase: false,
       matchWholeWord: false
     });
     results.load('items');
     await context.sync();
-    if (results.items.length > 0) return results.items[0];
+    return results.items.length > 0 ? results.items[0] : null;
   }
+
+  // Strategy 1 — progressively shorter prefixes
+  for (const len of [originalText.length, 200, 150, 100, 60, 40]) {
+    if (len > originalText.length) continue;
+    const hit = await trySearch(originalText.substring(0, len));
+    if (hit) return hit;
+  }
+
+  // Strategy 2 — individual sentences (AI often quotes mid-clause accurately
+  // even when it paraphrases the opening)
+  const sentences = originalText
+    .split(/(?<=[.;])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 20);
+
+  for (const sentence of sentences.slice(0, 5)) {
+    const hit = await trySearch(sentence.substring(0, 120));
+    if (hit) return hit;
+  }
+
   return null;
 }
 
