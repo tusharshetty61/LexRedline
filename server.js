@@ -9,6 +9,18 @@ app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'taskpane')));
 
+// Request logger
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    const status = res.statusCode;
+    const color = status >= 500 ? '\x1b[31m' : status >= 400 ? '\x1b[33m' : '\x1b[32m';
+    console.log(`${color}${req.method} ${req.path} → ${status} (${ms}ms)\x1b[0m`);
+  });
+  next();
+});
+
 function getClient() {
   return new AzureOpenAI({
     endpoint: process.env.AZURE_OPENAI_ENDPOINT,
@@ -38,6 +50,8 @@ app.post('/api/analyze', async (req, res) => {
 
   try {
     const client = getClient();
+    console.log(`  → Azure call /api/analyze (max_tokens: ${maxTokens || 3000})`);
+    const t = Date.now();
     const response = await client.chat.completions.create({
       model: process.env.AZURE_OPENAI_DEPLOYMENT,
       temperature: 0,
@@ -50,6 +64,8 @@ app.post('/api/analyze', async (req, res) => {
     });
 
     const text = response.choices[0].message.content;
+    const usage = response.usage;
+    console.log(`  ✓ Done in ${Date.now() - t}ms | tokens: ${usage.prompt_tokens} in / ${usage.completion_tokens} out`);
     res.json({ text });
 
   } catch (error) {
@@ -64,6 +80,8 @@ app.post('/api/chat', async (req, res) => {
 
   try {
     const client = getClient();
+    console.log(`  → Azure call /api/chat (${messages.length} messages, max_tokens: ${maxTokens || 3000})`);
+    const t = Date.now();
     const response = await client.chat.completions.create({
       model: process.env.AZURE_OPENAI_DEPLOYMENT,
       temperature: 0,
@@ -76,6 +94,8 @@ app.post('/api/chat', async (req, res) => {
     });
 
     const text = response.choices[0].message.content;
+    const usage = response.usage;
+    console.log(`  ✓ Done in ${Date.now() - t}ms | tokens: ${usage.prompt_tokens} in / ${usage.completion_tokens} out`);
     res.json({ text });
 
   } catch (error) {
