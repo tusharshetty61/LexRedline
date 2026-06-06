@@ -158,14 +158,21 @@ body {
 
 /* ── Confidence bar ──────────────────────────────── */
 .confidence-row {
-  display: flex; align-items: center; gap: 8px;
   margin-top: 10px; margin-bottom: 6px;
+}
+.confidence-bar-track {
+  height: 4px; background: var(--border); border-radius: 2px;
+  overflow: hidden; margin-bottom: 5px;
 }
 .confidence-bar-fill {
   height: 4px; border-radius: 2px; background: var(--success);
   transition: width 0.4s;
 }
-.confidence-label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.confidence-label {
+  font-size: 11px; color: var(--text-muted);
+  line-height: 1.5; display: block;
+  word-break: break-word;
+}
 
 /* ── Ask AI ──────────────────────────────────────── */
 .ask-ai-row {
