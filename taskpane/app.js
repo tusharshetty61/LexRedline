@@ -1,3 +1,10 @@
+// Catch any script load errors and surface them visibly
+window.onerror = (msg, src, line) => {
+  document.body.innerHTML = `<div style="padding:20px;color:red;font-family:monospace">
+    <b>Script error</b><br>${msg}<br>${src}:${line}
+  </div>`;
+};
+
 // =============================================================
 // CALL 1 — CLASSIFICATION PROMPT
 // =============================================================
@@ -575,10 +582,10 @@ function renderClauseCard(clause, suggestion, index, total) {
 // OFFICE.JS — HIGHLIGHT CURRENT CLAUSE
 // =============================================================
 const PRIORITY_HIGHLIGHT = {
-  CRITICAL: Word.HighlightColor.red,
-  HIGH: Word.HighlightColor.orange,
-  MEDIUM: Word.HighlightColor.yellow,
-  LOW: Word.HighlightColor.turquoise
+  CRITICAL: 'Red',
+  HIGH: 'Orange',
+  MEDIUM: 'Yellow',
+  LOW: 'Turquoise'
 };
 
 async function highlightInDocument(originalText, priority) {
@@ -586,7 +593,7 @@ async function highlightInDocument(originalText, priority) {
   try {
     await Word.run(async (context) => {
       const fullBody = context.document.body;
-      fullBody.font.highlightColor = Word.HighlightColor.none;
+      fullBody.font.highlightColor = 'None';
       await context.sync();
 
       // Word search is limited to 255 chars; trim if needed
@@ -603,8 +610,7 @@ async function highlightInDocument(originalText, priority) {
 
       if (results.items.length > 0) {
         const p = (priority || 'HIGH').toUpperCase();
-        results.items[0].font.highlightColor =
-          PRIORITY_HIGHLIGHT[p] || Word.HighlightColor.yellow;
+        results.items[0].font.highlightColor = PRIORITY_HIGHLIGHT[p] || 'Yellow';
         results.items[0].select();
         await context.sync();
       }
