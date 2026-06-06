@@ -622,8 +622,30 @@ async function highlightInDocument(originalText, priority) {
 
 
 // =============================================================
-// OFFICE.JS — APPLY ACCEPTED CHANGES AS TRACK CHANGES
+// OFFICE.JS — APPLY ACCEPTED CHANGES AS WORD TRACK CHANGES
 // =============================================================
+async function findRange(context, originalText) {
+  // Try progressively shorter substrings until we get a match.
+  // Needed because the AI sometimes paraphrases instead of quoting verbatim.
+  const lengths = [
+    originalText.length,
+    200, 150, 100, 60
+  ];
+  for (const len of lengths) {
+    if (len > originalText.length) continue;
+    const candidate = originalText.substring(0, len).trim();
+    if (candidate.length < 10) continue;
+    const results = context.document.body.search(candidate, {
+      matchCase: false,
+      matchWholeWord: false
+    });
+    results.load('items');
+    await context.sync();
+    if (results.items.length > 0) return results.items[0];
+  }
+  return null;
+}
+
 async function applyAcceptedChanges() {
   if (session.acceptedChanges.length === 0) {
     showCompletionScreen();
@@ -634,71 +656,53 @@ async function applyAcceptedChanges() {
 
   try {
     await Word.run(async (context) => {
+      // Enable track changes BEFORE any edits so Word records them properly
       context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
       await context.sync();
 
       for (const change of session.acceptedChanges) {
         try {
-          if (change.change_type === 'Delete') {
-            const results = context.document.body.search(
-              change.original_text,
-              { matchCase: false, matchWholeWord: false }
-            );
-            results.load('items');
-            await context.sync();
 
-            if (results.items.length > 0) {
-              results.items[0].insertText('', Word.InsertLocation.replace);
-              results.items[0].insertComment(`[AI REVIEWER] ${change.issue_summary}`);
-            }
-
-          } else if (change.change_type === 'Replace') {
-            const searchText = change.original_text && change.original_text.length > 200
-              ? change.original_text.substring(0, 200)
-              : change.original_text;
-
-            const results = context.document.body.search(
-              searchText,
-              { matchCase: false, matchWholeWord: false }
-            );
-            results.load('items');
-            await context.sync();
-
-            if (results.items.length > 0) {
-              results.items[0].insertText(
-                change.suggested_text,
-                Word.InsertLocation.replace
-              );
-              results.items[0].insertComment(
-                `[AI REVIEWER — ${change.applicable_statute || ''}] ${change.issue_summary}`
-              );
-            }
-
-          } else if (change.change_type === 'Insert') {
-            const sigSearch = context.document.body.search('IN WITNESS WHEREOF', {
-              matchCase: false
-            });
+          // ── INSERT (missing clause) ──────────────────────────
+          if (change.change_type === 'Insert' || change.original_text === 'MISSING') {
+            const sigSearch = context.document.body.search('IN WITNESS WHEREOF', { matchCase: false });
             sigSearch.load('items');
             await context.sync();
 
             if (sigSearch.items.length > 0) {
-              sigSearch.items[0].insertParagraph(
-                change.suggested_text,
-                Word.InsertLocation.before
-              );
-              sigSearch.items[0].insertComment(
-                `[AI REVIEWER — NEW CLAUSE] ${change.issue_summary}`
-              );
+              sigSearch.items[0].insertParagraph(change.suggested_text, 'Before');
+              sigSearch.items[0].insertComment(`[AI REVIEWER — NEW CLAUSE | ${change.applicable_statute || ''}] ${change.issue_summary}`);
             } else {
-              const lastPara = context.document.body.paragraphs.getLast();
-              lastPara.insertParagraph(change.suggested_text, Word.InsertLocation.after);
+              context.document.body.paragraphs.getLast()
+                .insertParagraph(change.suggested_text, 'After');
             }
+            await context.sync();
+            continue;
           }
 
-          await context.sync();
+          // ── FIND original text ───────────────────────────────
+          const range = await findRange(context, change.original_text);
+
+          if (range) {
+            if (change.change_type === 'Delete') {
+              range.insertText('', 'Replace');
+            } else {
+              // Replace — track changes records this as deletion + insertion
+              range.insertText(change.suggested_text, 'Replace');
+            }
+            range.insertComment(`[AI REVIEWER | ${change.applicable_statute || ''}] ${change.issue_summary}`);
+            await context.sync();
+
+          } else {
+            // Original text not locatable — add a comment at end so nothing is lost
+            context.document.body.paragraphs.getLast().insertComment(
+              `[AI REVIEWER — APPLY MANUALLY]\nClause: ${change.clause_name}\n${change.issue_summary}\n\nSUGGESTED:\n${change.suggested_text}`
+            );
+            await context.sync();
+          }
 
         } catch (clauseErr) {
-          console.warn(`Could not apply change for "${change.clause_name}":`, clauseErr.message);
+          console.warn(`Could not apply "${change.clause_name}":`, clauseErr.message);
         }
       }
 
