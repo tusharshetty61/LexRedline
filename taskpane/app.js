@@ -605,6 +605,21 @@ async function highlightInDocument(originalText, priority) {
   }
 }
 
+async function clearHighlight(originalText) {
+  if (!originalText || originalText === 'MISSING') return;
+  try {
+    await Word.run(async (context) => {
+      const range = await findRange(context, originalText);
+      if (range) {
+        range.font.highlightColor = 'None';
+        await context.sync();
+      }
+    });
+  } catch (e) {
+    // non-fatal
+  }
+}
+
 
 // =============================================================
 // OFFICE.JS — APPLY ACCEPTED CHANGES AS WORD TRACK CHANGES
@@ -640,7 +655,6 @@ async function onAccept() {
   const suggestion = session.clauseSuggestions[session.currentClauseIndex];
   if (!suggestion) { moveToNext(); return; }
 
-  // Disable buttons while writing to Word
   const btnAccept = document.getElementById('btn-accept');
   const btnSkip   = document.getElementById('btn-skip');
   btnAccept.disabled = true;
@@ -648,11 +662,12 @@ async function onAccept() {
   btnAccept.textContent = 'Applying…';
 
   try {
+    await clearHighlight(suggestion.original_text);
     await applyOneChange(suggestion);
     session.acceptedChanges.push(suggestion);
   } catch (e) {
     console.warn('Could not apply change:', e.message);
-    session.acceptedChanges.push(suggestion); // still count it
+    session.acceptedChanges.push(suggestion);
   } finally {
     btnAccept.disabled = false;
     btnSkip.disabled   = false;
@@ -662,8 +677,10 @@ async function onAccept() {
   moveToNext();
 }
 
-function onSkip() {
+async function onSkip() {
+  const suggestion = session.clauseSuggestions[session.currentClauseIndex];
   session.skippedChanges.push(session.triageJSON.clauses[session.currentClauseIndex]);
+  await clearHighlight(suggestion?.original_text);
   moveToNext();
 }
 
