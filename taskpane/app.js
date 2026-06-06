@@ -592,26 +592,16 @@ async function highlightInDocument(originalText, priority) {
   if (!originalText || originalText === 'MISSING') return;
   try {
     await Word.run(async (context) => {
-      const fullBody = context.document.body;
-      fullBody.font.highlightColor = 'None';
+      // Clear all previous highlights first
+      context.document.body.font.highlightColor = 'None';
       await context.sync();
 
-      // Word search is limited to 255 chars; trim if needed
-      const searchText = originalText.length > 200
-        ? originalText.substring(0, 200)
-        : originalText;
-
-      const results = context.document.body.search(searchText, {
-        matchCase: false,
-        matchWholeWord: false
-      });
-      results.load('items');
-      await context.sync();
-
-      if (results.items.length > 0) {
+      // Reuse the same fallback search logic as applyAcceptedChanges
+      const range = await findRange(context, originalText);
+      if (range) {
         const p = (priority || 'HIGH').toUpperCase();
-        results.items[0].font.highlightColor = PRIORITY_HIGHLIGHT[p] || 'Yellow';
-        results.items[0].select();
+        range.font.highlightColor = PRIORITY_HIGHLIGHT[p] || 'Yellow';
+        range.select();
         await context.sync();
       }
     });
