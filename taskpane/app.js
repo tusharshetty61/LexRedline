@@ -1028,21 +1028,6 @@ function renderClauseCard(clause, suggestion, index, total) {
     depWarn.classList.add('hidden');
   }
 
-  // Undefined terms warning
-  const termWarn = document.getElementById('undefined-terms-warning');
-  const termText = document.getElementById('undefined-terms-text');
-  const undefinedTerms = suggestion.undefined_terms_used || [];
-  if (undefinedTerms.length > 0) {
-    const termNames = undefinedTerms.map(u => u.term).join(', ');
-    termText.textContent = `Undefined terms in suggestion: ${termNames}. `;
-    termWarn.classList.remove('hidden');
-    // Store for the accept+def button
-    termWarn._undefinedTerms = undefinedTerms;
-  } else {
-    termWarn.classList.add('hidden');
-    termWarn._undefinedTerms = [];
-  }
-
   // Decision badge & Undo button
   updateDecisionBadge(index);
 
@@ -1701,7 +1686,6 @@ Office.onReady(info => {
     document.getElementById('btn-accept').addEventListener('click', onAccept);
 document.getElementById('btn-reject').addEventListener('click', onReject);
     document.getElementById('btn-undo').addEventListener('click', onUndoDecision);
-    document.getElementById('btn-accept-add-def').addEventListener('click', onAcceptAddDefinition);
 
     // Navigation
     document.getElementById('btn-prev').addEventListener('click', onPrev);
