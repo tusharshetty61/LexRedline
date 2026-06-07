@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const { AzureOpenAI } = require('openai');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const app = express();
 app.use(cors());
@@ -21,46 +21,37 @@ app.use((req, res, next) => {
 });
 
 function getClient() {
-  return new AzureOpenAI({
-    endpoint:   process.env.AZURE_OPENAI_ENDPOINT,
-    apiKey:     process.env.AZURE_OPENAI_API_KEY,
-    apiVersion: process.env.AZURE_OPENAI_API_VERSION || '2025-01-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT
-  });
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 }
 
 function validateEnv() {
-  const required = ['AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_DEPLOYMENT'];
-  const missing = required.filter(k => !process.env[k]);
-  if (missing.length > 0) {
-    console.error(`\n✗ Missing required env vars: ${missing.join(', ')}`);
-    console.error('  Copy .env.example to .env and fill in your Azure OpenAI details.\n');
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error('\n✗ Missing ANTHROPIC_API_KEY in .env\n');
     process.exit(1);
   }
 }
+
+const MODEL = () => process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 
 app.post('/api/analyze', async (req, res) => {
   const { systemPrompt, userContent, maxTokens } = req.body;
   try {
     const client = getClient();
-    console.log(`  → Azure call /api/analyze (max_tokens: ${maxTokens || 4000})`);
+    console.log(`  → Claude call /api/analyze (max_tokens: ${maxTokens || 4000})`);
     const t = Date.now();
-    const response = await client.chat.completions.create({
-      model:           process.env.AZURE_OPENAI_DEPLOYMENT,
-      temperature:     0,
-      max_tokens:      maxTokens || 4000,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: userContent  }
-      ]
+    const response = await client.messages.create({
+      model:      MODEL(),
+      max_tokens: maxTokens || 4000,
+      temperature: 0,
+      system:     systemPrompt,
+      messages:   [{ role: 'user', content: userContent }]
     });
-    const text  = response.choices[0].message.content;
+    const text  = response.content[0].text;
     const usage = response.usage;
-    console.log(`  ✓ Done in ${Date.now() - t}ms | tokens: ${usage.prompt_tokens} in / ${usage.completion_tokens} out`);
+    console.log(`  ✓ Done in ${Date.now() - t}ms | tokens: ${usage.input_tokens} in / ${usage.output_tokens} out`);
     res.json({ text });
   } catch (error) {
-    console.error('Azure OpenAI error (/api/analyze):', error.message);
+    console.error('Anthropic error (/api/analyze):', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -69,34 +60,27 @@ app.post('/api/chat', async (req, res) => {
   const { systemPrompt, messages, maxTokens } = req.body;
   try {
     const client = getClient();
-    console.log(`  → Azure call /api/chat (${messages.length} messages, max_tokens: ${maxTokens || 4000})`);
+    console.log(`  → Claude call /api/chat (${messages.length} messages, max_tokens: ${maxTokens || 4000})`);
     const t = Date.now();
-    const response = await client.chat.completions.create({
-      model:           process.env.AZURE_OPENAI_DEPLOYMENT,
-      temperature:     0,
-      max_tokens:      maxTokens || 4000,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...messages
-      ]
+    const response = await client.messages.create({
+      model:      MODEL(),
+      max_tokens: maxTokens || 4000,
+      temperature: 0,
+      system:     systemPrompt,
+      messages:   messages
     });
-    const text  = response.choices[0].message.content;
+    const text  = response.content[0].text;
     const usage = response.usage;
-    console.log(`  ✓ Done in ${Date.now() - t}ms | tokens: ${usage.prompt_tokens} in / ${usage.completion_tokens} out`);
+    console.log(`  ✓ Done in ${Date.now() - t}ms | tokens: ${usage.input_tokens} in / ${usage.output_tokens} out`);
     res.json({ text });
   } catch (error) {
-    console.error('Azure OpenAI error (/api/chat):', error.message);
+    console.error('Anthropic error (/api/chat):', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({
-    status:     'ok',
-    endpoint:   process.env.AZURE_OPENAI_ENDPOINT,
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT
-  });
+  res.json({ status: 'ok', model: MODEL() });
 });
 
 validateEnv();
@@ -104,8 +88,6 @@ validateEnv();
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`\n✓ Contract Reviewer server running on http://localhost:${PORT}`);
-  console.log(`  Azure endpoint : ${process.env.AZURE_OPENAI_ENDPOINT}`);
-  console.log(`  Deployment     : ${process.env.AZURE_OPENAI_DEPLOYMENT}`);
-  console.log(`  API version    : ${process.env.AZURE_OPENAI_API_VERSION || '2025-01-01-preview'}`);
-  console.log(`\n  Health check   : http://localhost:${PORT}/health\n`);
+  console.log(`  Model : ${MODEL()}`);
+  console.log(`\n  Health: http://localhost:${PORT}/health\n`);
 });

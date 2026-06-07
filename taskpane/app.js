@@ -1322,7 +1322,7 @@ async function findRange(context, originalText) {
   for (const len of [originalText.length, 200, 150, 100, 60, 40]) {
     if (len > originalText.length) continue;
     const hit = await trySearch(originalText.substring(0, len));
-    if (hit) return hit;
+    if (hit) { console.log(`[findRange] S1 matched at len=${len}:`, originalText.substring(0, len)); return hit; }
   }
 
   // Strategy 2 — strip leading clause number ("8.    " etc.) and retry.
