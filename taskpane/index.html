@@ -8,6 +8,16 @@
 </head>
 <body>
 
+  <!-- Global error banner (replaces alert() which is blocked in Word add-ins) -->
+  <div id="error-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:999;
+    background:#c0392b;color:#fff;padding:10px 14px;font-size:13px;line-height:1.4;
+    white-space:pre-wrap;word-break:break-word;">
+    <span id="error-banner-text"></span>
+    <button onclick="document.getElementById('error-banner').style.display='none'"
+      style="float:right;background:none;border:1px solid #fff;color:#fff;
+      padding:2px 8px;cursor:pointer;border-radius:3px;font-size:12px;">✕</button>
+  </div>
+
   <!-- SCREEN: Landing -->
   <div id="screen-landing" class="screen active">
     <div class="brand-icon">⚖</div>

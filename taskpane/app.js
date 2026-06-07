@@ -515,6 +515,16 @@ function showScreen(id) {
   if (screen) screen.classList.add('active');
 }
 
+function showError(msg) {
+  console.error('[Error]', msg);
+  const banner = document.getElementById('error-banner');
+  const text   = document.getElementById('error-banner-text');
+  if (banner && text) {
+    text.textContent = msg;
+    banner.style.display = 'block';
+  }
+}
+
 function setLoading(text, sub = '') {
   document.getElementById('loading-text').textContent = text;
   document.getElementById('loading-sub').textContent = sub;
@@ -668,7 +678,7 @@ async function runReview(clarificationAnswers = null) {
     sessionState.documentText = await extractDocumentText();
 
     if (!sessionState.documentText || sessionState.documentText.trim().length < 50) {
-      alert('The document appears to be empty or too short to review. Please ensure a contract is open in Word.');
+      showError('The document appears to be empty or too short to review. Please ensure a contract is open in Word.');
       showScreen('screen-landing');
       return;
     }
@@ -691,7 +701,7 @@ async function runReview(clarificationAnswers = null) {
       userContent = `DRAFT ORIGIN: ${sessionState.draftOrigin}\n\nCLARIFICATION ANSWERS FROM LAWYER:\n${JSON.stringify(clarificationAnswers, null, 2)}\n\nAGREEMENT TEXT:\n${sessionState.documentText}`;
     }
 
-    const call1Text = await callAPI(CALL_1_PROMPT, userContent, 2000);
+    const call1Text = await callAPI(CALL_1_PROMPT, userContent, 4000);
     sessionState.classificationJSON = parseJSON(call1Text);
 
     if (sessionState.classificationJSON.confidence && sessionState.classificationJSON.confidence.status === 'LOW') {
@@ -743,7 +753,7 @@ async function runReview(clarificationAnswers = null) {
 
   } catch (err) {
     console.error('Review error:', err);
-    alert('Error during review: ' + err.message + '\n\nMake sure your OPENAI_API_KEY is set in .env and the server is running.');
+    showError('Error during review: ' + err.message);
     showScreen('screen-landing');
   }
 }
@@ -918,7 +928,7 @@ async function navigateTo(index) {
 
   } catch (err) {
     console.error('Clause card error:', err);
-    alert('Error loading clause suggestion: ' + err.message);
+    showError('Error loading clause suggestion: ' + err.message);
     showScreen('screen-landing');
   }
 }
@@ -1174,7 +1184,7 @@ async function onFinalise() {
     await applyAcceptedChanges(accepted);
   } catch (err) {
     console.error('Apply error:', err);
-    alert('Error applying some changes: ' + err.message + '\nPartial changes may have been applied. Check the document.');
+    showError('Error applying some changes: ' + err.message + '\nPartial changes may have been applied. Check the document.');
   }
 
   showSummaryScreen();
@@ -1410,7 +1420,7 @@ async function onAskAI() {
     input.value = '';
 
   } catch (err) {
-    alert('Ask AI error: ' + err.message);
+    showError('Ask AI error: ' + err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Ask';
