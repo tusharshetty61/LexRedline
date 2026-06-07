@@ -552,40 +552,51 @@ function extractDefinedTerms(rawText) {
 }
 
 function segmentDocument(rawText) {
-  // Only match SHORT numbered headings (title-style, ends at line-end within ~6 words).
-  // Numbered paragraphs like "8.    The Purchaser shall indemnify..." are NOT headings —
-  // they fail the $ anchor because the long paragraph text continues past 6 words.
-  const headingRegex = /^(\d+\.(?:\d+\.?)*\s+[A-Z]\w*(?:\s+\S+){0,5}\s*$|[A-Z]{4,}[\s\w]*$)/gm;
+  const headingRegex = /^(\d+\.(?:\d+\.?)*\s+[A-Z][A-Za-z]|[A-Z]{4,}[\s\w]*$)/gm;
   const segments = [];
   let lastIndex = 0;
   let lastHeading = 'Preamble';
   let lastHeadingFull = 'Preamble';
+  let lastHeadingStart = 0;
   let segId = 0;
   let match;
 
   while ((match = headingRegex.exec(rawText)) !== null) {
     if (match.index > lastIndex) {
+      const bodyText = rawText.slice(lastIndex, match.index).trim();
+      // Prepend headingFull so segment.text contains the complete clause content
+      // (the heading line was excluded from body since lastIndex = lineEnd+1).
+      // findRangeByHeading uses headingFull separately and is unaffected.
+      const fullText = lastHeadingFull !== 'Preamble'
+        ? [lastHeadingFull, bodyText].filter(Boolean).join('\n')
+        : bodyText;
       segments.push({
         section_id: String(segId++),
         heading: lastHeading,
         headingFull: lastHeadingFull,
-        text: rawText.slice(lastIndex, match.index).trim(),
-        charStart: lastIndex,
+        text: fullText,
+        charStart: lastHeadingStart,
         charEnd: match.index
       });
     }
-    // Capture the full heading line (up to next newline) for accurate search anchoring
+    // Capture the full heading line for accurate findRangeByHeading anchoring
     const lineEnd = rawText.indexOf('\n', match.index);
     lastHeadingFull = (lineEnd >= 0 ? rawText.slice(match.index, lineEnd) : rawText.slice(match.index)).trim();
     lastHeading = match[0].trim();
-    lastIndex = lineEnd >= 0 ? lineEnd + 1 : rawText.length; // body starts after heading line
+    lastHeadingStart = match.index;
+    lastIndex = lineEnd >= 0 ? lineEnd + 1 : rawText.length;
   }
   segments.push({
     section_id: String(segId),
     heading: lastHeading,
     headingFull: lastHeadingFull,
-    text: rawText.slice(lastIndex).trim(),
-    charStart: lastIndex,
+    text: (() => {
+      const bodyText = rawText.slice(lastIndex).trim();
+      return lastHeadingFull !== 'Preamble'
+        ? [lastHeadingFull, bodyText].filter(Boolean).join('\n')
+        : bodyText;
+    })(),
+    charStart: lastHeadingStart,
     charEnd: rawText.length
   });
   return segments;
@@ -705,31 +716,15 @@ async function runReview(clarificationAnswers = null) {
       `Reviewing clauses under ${cls.agreement_type} framework`
     );
 
-    // Detect document structure: named sections vs numbered paragraphs with no headings
-    const hasNamedSections = segments.some(s => s.heading !== 'Preamble');
-
-    // FORMAT A: named sections → send structured sections + manifest
-    // FORMAT B: numbered paragraphs → send raw document_text, no sections/manifest
-    // (sending manifest=["Preamble"] alongside a 22-item baseline causes the AI
-    //  to conclude all 21 non-Preamble sections are missing — avoid entirely)
-    const call2Payload = hasNamedSections
-      ? JSON.stringify({
-          classification: sessionState.classificationJSON,
-          draft_origin: sessionState.draftOrigin,
-          risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
-          section_manifest: sessionState.sectionManifest,
-          active_baseline: sessionState.activeBaseline,
-          sections: mergedSegments,
-          instruction: 'Evaluate ALL sections listed in section_manifest. Your output must include sections_reviewed listing every section_id you examined.'
-        })
-      : JSON.stringify({
-          classification: sessionState.classificationJSON,
-          draft_origin: sessionState.draftOrigin,
-          risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
-          active_baseline: sessionState.activeBaseline,
-          document_text: sessionState.documentText,
-          instruction: 'FORMAT B: numbered-paragraph document. Read document_text in full. Identify clause types by their substance. Flag issues with existing clauses as Statutory Conflict / Material Risk / etc. Only use Missing Clause for substance genuinely absent.'
-        });
+    const call2Payload = JSON.stringify({
+      classification: sessionState.classificationJSON,
+      draft_origin: sessionState.draftOrigin,
+      risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
+      section_manifest: sessionState.sectionManifest,
+      active_baseline: sessionState.activeBaseline,
+      sections: mergedSegments,
+      instruction: 'Evaluate ALL sections in the sections array. Your output must include sections_reviewed listing every section_id you examined.'
+    });
 
     const call2Text = await callAPI(CALL_2_PROMPT, call2Payload, 6000);
     sessionState.triageJSON = parseJSON(call2Text);
