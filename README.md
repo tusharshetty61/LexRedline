@@ -44,27 +44,43 @@ The backend is already deployed. All you need to do is sideload `manifest.xml` i
 
 ### Step 1 — Download the manifest
 
-Download `manifest.xml` from this repository.
+Download `manifest.xml` from the root of this repository. You can grab it directly on GitHub by clicking the file, then clicking the **Download raw file** button (the download icon, top-right of the file view).
 
-### Step 2 — Sideload into Word
+### Step 2 — Share the folder containing the manifest
 
-**Windows**
+The manifest must live in a folder that Word can reach as a network path.
 
-1. Open Word and open any document.
-2. Go to **Insert** → **Add-ins** → **My Add-ins**.
-3. Click **Upload My Add-in** (top-right of the dialog).
-4. Browse to and select `manifest.xml`.
-5. Click **Upload**.
-6. The **"Contract Review"** group appears in the **Home** tab ribbon.
+**Option 1 — share a local folder (Windows)**
+
+1. Create a folder anywhere, e.g. `C:\AddIns\ContractReviewer`.
+2. Place `manifest.xml` inside it.
+3. Right-click the folder → **Properties** → **Sharing** → **Share…**
+4. Share it (share with yourself is fine). Note the network path shown, e.g. `\\YourPC\ContractReviewer`.
+
+**Option 2 — use the folder's UNC path directly (Windows)**
+
+If the folder is already on a network drive or you just want a local path treated as a share, you can use `\\localhost\` followed by the share name you set above.
+
+### Step 3 — Add the share as a Trusted Add-in Catalog in Word
+
+1. Open Word.
+2. Go to **File** → **Options** → **Trust Center** → **Trust Center Settings…**
+3. Click **Trusted Add-in Catalogs** in the left panel.
+4. In the **Catalog Url** field, paste the network path (e.g. `\\YourPC\ContractReviewer`).
+5. Click **Add Catalog**.
+6. Tick the **Show in Menu** checkbox next to the catalog you just added.
+7. Click **OK** → **OK**.
+8. **Completely close and reopen Word** (the catalog is only read at startup).
+
+### Step 4 — Load the add-in from the shared folder
+
+1. Open any Word document.
+2. Go to **Home** → **Add-ins** → **My Add-ins**.
+3. Click the **SHARED FOLDER** tab at the top of the dialog.
+4. You should see **AI Contract Reviewer** listed.
+5. Select it and click **Add**.
+6. The **"Contract Review"** group appears in the **Home** ribbon.
 7. Click **Review Contract** to open the task pane.
-
-**Mac**
-
-1. Open Word and open any document.
-2. Go to **Insert** → **Add-ins**.
-3. Click **Upload My Add-in**.
-4. Select `manifest.xml` and click **Open**.
-5. Click **Review Contract** in the Home ribbon.
 
 > The hosted backend handles the OpenAI calls. The add-in reads and writes to your Word document locally — document content is sent to the AI for analysis.
 
