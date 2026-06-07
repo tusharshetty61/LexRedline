@@ -549,8 +549,9 @@ async function extractDocumentText() {
     const body = context.document.body;
     body.load('text');
     await context.sync();
-    // Normalize Word's \r paragraph breaks to \n so all string operations work correctly
-    return body.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    return body.text
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n')  // normalize Word paragraph breaks
+      .replace(/[   ]/g, ' ');              // normalize non-breaking spaces
   });
 }
 
@@ -1349,12 +1350,27 @@ function stripClauseNumber(text) {
   return (text || '').replace(/^\d+[\d.]*\.?\s+/, '').trim();
 }
 
+// Normalize characters that differ between what Word stores and what GPT-4.1
+// returns in JSON: non-breaking spaces, narrow spaces, smart quotes, em-dashes.
+// body.search() treats U+00A0 and U+0020 as different — this collapses them.
+function normalizeSearchText(text) {
+  return text
+    .replace(/[   ⁠]/g, ' ') // non-breaking / narrow spaces → space
+    .replace(/[‘’`´]/g, "'")  // curly single quotes → straight
+    .replace(/[“”]/g, '"')              // curly double quotes → straight
+    .replace(/–|—/g, '-')               // en/em dash → hyphen
+    .replace(/\s+/g, ' ')                         // collapse multiple spaces
+    .trim();
+}
+
 async function findRange(context, originalText) {
   if (!originalText || originalText.trim().length < 5) return null;
 
   async function trySearch(candidate) {
     if (!candidate || candidate.trim().length < 10) return null;
-    const results = context.document.body.search(candidate.trim(), {
+    const normalized = normalizeSearchText(candidate);
+    if (normalized.length < 10) return null;
+    const results = context.document.body.search(normalized, {
       matchCase: false, matchWholeWord: false
     });
     results.load('items');
