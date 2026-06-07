@@ -902,7 +902,7 @@ async function navigateTo(index) {
     updateNavButtons(index, total);
     showScreen('screen-clause');
     if (cached.original_text && cached.original_text !== 'MISSING') {
-      await highlightInDocument(cached.original_text, clause.priority);
+      await highlightInDocument(cached.original_text, clause.priority, index);
     }
     return;
   }
@@ -958,7 +958,7 @@ async function navigateTo(index) {
     showScreen('screen-clause');
 
     if (suggestion.original_text && suggestion.original_text !== 'MISSING') {
-      await highlightInDocument(suggestion.original_text, clause.priority);
+      await highlightInDocument(suggestion.original_text, clause.priority, index);
     }
 
   } catch (err) {
@@ -1114,13 +1114,14 @@ function onAccept() {
   const suggestion = sessionState.suggestionCache[idx];
   if (!suggestion) return;
 
-  sessionState.pendingChanges[idx] = { ...suggestion, accepted_as: 'full' };
+  const change = { ...suggestion, accepted_as: 'full', bookmarkIndex: idx };
+  sessionState.pendingChanges[idx] = change;
   sessionState.decisionMap[idx] = 'accepted';
   updateDecisionBadge(idx);
   updateStatusCounts();
 
   // Apply to document immediately as a tracked change (fire and forget)
-  applyAcceptedChanges([{ ...suggestion, accepted_as: 'full' }]);
+  applyAcceptedChanges([change]);
 
   onNext();
 }
@@ -1147,7 +1148,7 @@ function onReject() {
   if (suggestion) {
     sessionState.rejectedChanges.push(sessionState.triageJSON.clauses[idx]);
     if (suggestion.original_text && suggestion.original_text !== 'MISSING') {
-      clearHighlight(suggestion.original_text);
+      clearHighlight(suggestion.original_text, idx);
     }
   }
   delete sessionState.pendingChanges[idx];
@@ -1169,7 +1170,7 @@ function onUndoDecision() {
   if (prevDecision === 'rejected' && suggestion && suggestion.original_text
       && suggestion.original_text !== 'MISSING') {
     const clause = sessionState.triageJSON.clauses[idx];
-    highlightInDocument(suggestion.original_text, clause.priority);
+    highlightInDocument(suggestion.original_text, clause.priority, idx);
   }
 }
 
@@ -1241,17 +1242,16 @@ async function applyAcceptedChanges(accepted) {
         continue;
       }
 
-      // 1. Text search on original_text (already stripped of clause number prefix).
-      //    Finds just the content — so "8.    " prefix stays intact in the document
-      //    and the replacement slots in cleanly after it.
-      let target = await findRange(ctx, c.original_text);
+      // 1. Bookmark — set at highlight time, guaranteed exact position, no text search.
+      let target = c.bookmarkIndex !== undefined
+        ? await getBookmarkRange(ctx, c.bookmarkIndex)
+        : null;
 
-      // 2. Heading-based range — only if text search fails (real section headings
-      //    where the body text is too long to search). NOT suitable for numbered
-      //    paragraph clauses because the regex match is only a prefix of the line.
-      if (!target) {
-        target = await findRangeByHeading(c, ctx);
-      }
+      // 2. Text search fallback (if clause was never highlighted, or bookmark lost)
+      if (!target) target = await findRange(ctx, c.original_text);
+
+      // 3. Heading-based range — last resort for long section bodies
+      if (!target) target = await findRangeByHeading(c, ctx);
 
       if (target) {
         if (c.change_type === 'Delete') {
@@ -1303,7 +1303,11 @@ const PRIORITY_HIGHLIGHT = {
   LOW: 'Turquoise'
 };
 
-async function highlightInDocument(originalText, priority) {
+// Bookmark names are pinned to clause index so we can retrieve exact ranges
+// without text search at apply/clear time. Names must be ≤40 chars, letters/digits/underscore.
+const BOOKMARK_PREFIX = 'airv_';
+
+async function highlightInDocument(originalText, priority, clauseIndex) {
   if (!originalText || originalText === 'MISSING') return;
   try {
     await Word.run(async (context) => {
@@ -1312,6 +1316,11 @@ async function highlightInDocument(originalText, priority) {
         const p = (priority || 'HIGH').toUpperCase();
         range.font.highlightColor = PRIORITY_HIGHLIGHT[p] || 'Yellow';
         range.select();
+        // Pin a bookmark on the exact range found — used instead of text search
+        // when accepting (applying tracked change) or rejecting (clearing highlight).
+        if (clauseIndex !== undefined) {
+          range.insertBookmark(`${BOOKMARK_PREFIX}${clauseIndex}`);
+        }
         await context.sync();
       }
     });
@@ -1320,11 +1329,27 @@ async function highlightInDocument(originalText, priority) {
   }
 }
 
-async function clearHighlight(originalText) {
+// Retrieve a bookmarked range. Returns null if the bookmark doesn't exist.
+async function getBookmarkRange(context, clauseIndex) {
+  try {
+    const range = context.document.getBookmarkRangeOrNullObject(`${BOOKMARK_PREFIX}${clauseIndex}`);
+    range.load('isNullObject');
+    await context.sync();
+    return range.isNullObject ? null : range;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function clearHighlight(originalText, clauseIndex) {
   if (!originalText || originalText === 'MISSING') return;
   try {
     await Word.run(async (context) => {
-      const range = await findRange(context, originalText);
+      // Use bookmark if available — avoids text search entirely
+      let range = clauseIndex !== undefined
+        ? await getBookmarkRange(context, clauseIndex)
+        : null;
+      if (!range) range = await findRange(context, originalText);
       if (range) {
         range.font.highlightColor = 'None';
         await context.sync();
@@ -1378,8 +1403,6 @@ async function findRange(context, originalText) {
   }
 
   // Strategy 2 — strip leading clause number ("8.    " etc.) and retry.
-  // AI often quotes content without the number; segment verbatim text includes it.
-  // Word may also normalise multi-space padding differently from the raw text.
   const stripped = stripClauseNumber(originalText);
   if (stripped !== originalText && stripped.length > 20) {
     for (const len of [Math.min(stripped.length, 200), 150, 100, 60, 40]) {
@@ -1389,7 +1412,7 @@ async function findRange(context, originalText) {
     }
   }
 
-  // Strategy 3 — individual sentences
+  // Strategy 3 — individual sentences via body.search()
   const sentences = originalText
     .split(/(?<=[.;])\s+/)
     .map(s => s.trim())
@@ -1398,6 +1421,29 @@ async function findRange(context, originalText) {
   for (const sentence of sentences.slice(0, 5)) {
     const hit = await trySearch(sentence.substring(0, 120));
     if (hit) return hit;
+  }
+
+  // Strategy 4 — paragraph scan using JS string matching.
+  // Bypasses body.search() entirely — loads every paragraph's text and uses
+  // String.includes() which is exact and has no Word API character limits or
+  // encoding quirks. Slowest but most reliable fallback.
+  try {
+    const norm = normalizeSearchText(originalText).toLowerCase();
+    // Use first 8 words as fingerprint — short enough to match, specific enough to locate
+    const fingerprint = norm.split(/\s+/).filter(Boolean).slice(0, 8).join(' ');
+    if (fingerprint.length >= 15) {
+      const paras = context.document.body.paragraphs;
+      paras.load('items/text');
+      await context.sync();
+      for (const para of paras.items) {
+        const paraText = normalizeSearchText(para.text).toLowerCase();
+        if (paraText.includes(fingerprint)) {
+          return para.getRange();
+        }
+      }
+    }
+  } catch (e) {
+    // non-fatal — paragraph scan failed
   }
 
   return null;
