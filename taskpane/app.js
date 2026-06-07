@@ -537,7 +537,8 @@ async function extractDocumentText() {
     const body = context.document.body;
     body.load('text');
     await context.sync();
-    return body.text;
+    // Normalize Word's \r paragraph breaks to \n so all string operations work correctly
+    return body.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   });
 }
 
@@ -552,6 +553,8 @@ function extractDefinedTerms(rawText) {
 }
 
 function segmentDocument(rawText) {
+  // Word uses \r for paragraph breaks; normalize to \n so indexOf/regex work correctly
+  rawText = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const headingRegex = /^(\d+\.(?:\d+\.?)*\s+[A-Z][A-Za-z]|[A-Z]{4,}[\s\w]*$)/gm;
   const segments = [];
   let lastIndex = 0;
