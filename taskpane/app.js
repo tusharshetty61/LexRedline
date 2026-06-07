@@ -692,6 +692,20 @@ async function runReview(clarificationAnswers = null) {
       `Reviewing clauses under ${cls.agreement_type} framework`
     );
 
+    // Detect document structure: named sections vs numbered paragraphs with no headings
+    const hasNamedSections = segments.some(s => s.heading !== 'Preamble');
+    const call2Instruction = hasNamedSections
+      ? 'Evaluate ALL sections listed in section_manifest. Your output must include sections_reviewed listing every section_id you examined.'
+      : 'CRITICAL: This document uses numbered paragraphs with NO named section headings. ' +
+        'section_manifest only contains "Preamble" because no headings were detected — this does NOT mean ' +
+        'the clauses are absent. The entire document text is in sections[0].text. ' +
+        'You MUST read the full numbered paragraph content in sections[0].text to determine what substance is present. ' +
+        'Only mark a clause as issue_category "Missing Clause" with clause_text "MISSING" if you genuinely ' +
+        'cannot find that clause\'s legal substance anywhere in the numbered paragraphs. ' +
+        'For clauses that DO exist (even under a number like "8. The Purchaser shall indemnify..."), ' +
+        'set issue_category to "Statutory Conflict", "Material Risk", etc. and set clause_text to the verbatim paragraph text. ' +
+        'Do NOT use section_manifest to judge what is missing — use the actual document content.';
+
     const call2Payload = JSON.stringify({
       classification: sessionState.classificationJSON,
       draft_origin: sessionState.draftOrigin,
@@ -699,7 +713,8 @@ async function runReview(clarificationAnswers = null) {
       section_manifest: sessionState.sectionManifest,
       active_baseline: sessionState.activeBaseline,
       sections: mergedSegments,
-      instruction: 'Evaluate ALL sections listed in section_manifest. Your output must include sections_reviewed listing every section_id you examined.'
+      document_structure: hasNamedSections ? 'named_sections' : 'numbered_paragraphs_no_headings',
+      instruction: call2Instruction
     });
 
     const call2Text = await callAPI(CALL_2_PROMPT, call2Payload, 6000);
