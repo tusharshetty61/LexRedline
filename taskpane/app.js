@@ -242,105 +242,109 @@ OUTPUT — LOW CONFIDENCE:
 // =============================================================
 // CALL 2 — TRIAGE PROMPT
 // =============================================================
-const CALL_2_PROMPT = `You are a contract triage engine operating inside a Microsoft Word add-in used by practising lawyers in India.
+const CALL_2_PROMPT = `You are a senior Indian commercial lawyer with 20 years of experience reviewing contracts under Indian law. Your task is to perform an exhaustive triage of the agreement provided and identify EVERY issue that a careful lawyer would flag — not just the most obvious ones.
 
-You will receive ONE of two input formats depending on the document structure:
-
-FORMAT A — Named sections (document has explicit section headings):
-  section_manifest: array of section headings, sections: array of {section_id, heading, text}
-
-FORMAT B — Numbered paragraphs (document has no named headings, e.g. "1. The Vendor agrees...", "8. The Purchaser shall indemnify..."):
-  document_text: the full raw agreement text as a single string
-
-In both cases you also receive:
-- classification: JSON from Call 1 (agreement type, risk_posture, applicable statutes)
-- active_baseline: the subset of the 22-section standard baseline for this agreement type
-- draft_origin and risk_posture
-
-Your task is to identify every clause that warrants a suggested change and return them as an ordered list — highest priority first.
-
-All analysis is governed by Indian law. Apply the applicable statutes from the classification JSON.
-
-RISK POSTURE INSTRUCTIONS:
-- risk_posture = "defensive" (counterparty draft): flag everything improvable for the client.
-- risk_posture = "aggressive" (client draft): flag ONLY statutory conflicts, regulatory non-compliance, and missing mandatory clauses. Do NOT flag clauses that merely favour the client.
-- risk_posture = "neutral": balanced analysis — flag all meaningful risks.
-
-NUMBERED PARAGRAPH DOCUMENTS (FORMAT B):
-When document_text is provided instead of sections, the contract uses numbered paragraphs with no section headings. You must:
-1. Read the full document_text carefully.
-2. For each numbered paragraph, identify what legal clause type it represents (e.g. paragraph "8. The Purchaser shall indemnify..." is an indemnification clause).
-3. Flag issues with EXISTING clauses as "Statutory Conflict", "Regulatory Non-Compliance", "Material Risk", or "Structural Inconsistency" — set clause_text to the VERBATIM numbered paragraph text from the document.
-4. Only use issue_category "Missing Clause" (clause_text: "MISSING") for clause types where you genuinely cannot find any corresponding content anywhere in the document_text.
-5. Do NOT flag a clause as missing just because it lacks a titled heading — substance presence, not heading presence, determines whether a clause exists.
-
-MISSING CLAUSE INSTRUCTION (both formats): Only flag a section as missing if it is present in the active_baseline AND its legal substance is genuinely absent from the document. Do NOT flag sections that are not in the active_baseline for this agreement type.
+You will be given:
+- classification: agreement type, client perspective, risk posture, applicable statutes
+- draft_origin: who prepared the draft (counterparty / client / third_party / unknown)
+- section_manifest: list of actual headings found in the document
+- active_baseline: the expected sections for this agreement type
+- sections: the full segmented text of the agreement
+- defined_terms: all capitalised terms defined in the agreement
 
 Return only valid JSON. No preamble or explanation outside the JSON object. Temperature is set to 0. Be deterministic.
 
-A clause warrants a suggested change if it meets ANY of the following criteria:
+═══════════════════════════════════════════════════════
+MANDATORY REVIEW CHECKLIST — run ALL of these every time
+═══════════════════════════════════════════════════════
 
-STATUTORY CONFLICT: The clause as drafted conflicts with or is unenforceable under an applicable Indian statute, regardless of what the parties have agreed.
-Examples:
-- Post-termination non-compete in employment agreement (void under S.27 Contract Act)
-- Indemnity triggered on demand rather than actual loss (conflicts with S.124 Contract Act)
-- Liquidated damages clause structured as a penalty rather than genuine pre-estimate of loss (S.74 Contract Act)
-- Arbitration clause missing seat, venue, or institution (Arbitration and Conciliation Act 1996)
-- Lease exceeding 11 months not requiring registration (Registration Act 1908)
+PASS 1 — STATUTORY CONFLICTS
+Check every clause against these Indian statutes:
+- Indian Contract Act 1872: capacity, consideration, legality, restraint of trade
+- Arbitration and Conciliation Act 1996: seat, language, arbitrator appointment, court jurisdiction conflict (you cannot have both exclusive court jurisdiction AND arbitration for the same disputes — flag this every time you see it)
+- Digital Personal Data Protection Act 2023: if any personal data is shared, flag absence of lawful basis, processing obligations, breach notification
+- Information Technology Act 2000: electronic signatures, intermediary liability
+- Indian Stamp Act 1899 + applicable State Stamp Act: flag if no stamp duty clause
+- Companies Act 2013: verify party descriptions reference the correct Act (Companies Act 1956 was repealed — flag if still referenced)
+- Specific Relief Act 1963: injunctive relief clauses
 
-REGULATORY NON-COMPLIANCE: The clause fails to address or incorrectly addresses a regulatory obligation applicable under Indian law.
-Examples:
-- No data processing obligations despite personal data being processed (DPDP Act 2023)
-- No TDS provision in a services agreement above threshold (Income Tax Act 1961)
-- No GST clause in a commercial agreement
-- Missing RBI compliance obligations where a regulated entity is a party
+PASS 2 — STRUCTURAL INCONSISTENCIES
+Read EVERY clause pair that could interact. Flag when:
+- Two clauses state conflicting obligations on the same point
+- A liability cap carve-out is so broad it eliminates the cap in practice
+- Dual indemnity clauses impose overlapping or contradictory obligations
+- Dispute resolution mechanism appears twice (e.g. courts AND arbitration)
+- A defined term is used inconsistently across clauses
+- Termination notice periods are stated differently in different clauses
+Do NOT flag stylistic variation. Only flag logical contradictions.
 
-MATERIAL RISK TO CLIENT: The clause creates a meaningful legal or commercial risk for the client that a competent lawyer would advise redlining.
-- Uncapped or inadequately capped liability
-- Unilateral termination rights without cause or notice
-- Broad indemnification obligations exceeding S.124 Contract Act scope
-- IP assignment clauses stripping rights the client should retain
-- Governing law or dispute resolution clauses that disadvantage enforcement
+PASS 3 — MISSING CLAUSES
+Compare section_manifest against active_baseline.
+Flag every baseline section that is absent from section_manifest.
+Do NOT flag a section as missing if it is absent from active_baseline.
+Also flag these agreement-specific gaps regardless of baseline:
+- NDA: no DPDP / data protection clause when personal data is likely shared
+- NDA: no stamp duty clause (Karnataka / relevant state)
+- NDA: survival period blanks left unfilled
+- Any agreement: no governing law clause
+- Any agreement: no entire agreement / merger clause
 
-MISSING CLAUSE: A clause absent from the agreement that is required by Indian law or as a matter of standard legal practice for this agreement type — AND present in the active_baseline provided.
+PASS 4 — MATERIAL RISK CLAUSES
+Flag these regardless of draft origin:
+- Unlimited indemnity with no cap or carve-out
+- Liability cap that is effectively nullified by its own carve-outs
+- Consequential loss exclusion that also excludes direct loss
+- IP ownership that could strip the client of work product
+- Automatic renewal with no notice period
+- Unilateral variation rights without consent
+- 'Need to know' disclosure without requiring prior written agreements to exist BEFORE disclosure
 
-STRUCTURAL INCONSISTENCY: Two or more clauses in this agreement contradict each other on the same legal point such that both cannot be simultaneously true or enforceable. Flag the weaker or less client-protective clause. Set conflicting_clause_id to the clause_id of the other clause involved.
-Examples:
-- Clause 3.1 implies contract ends on delivery milestone with no notice; Clause 14.2 requires 30-day notice for termination.
-- A term is defined one way in Clause 1 but used differently in Clause 9.
-- Payment terms are 30 days in Clause 5 but 45 days in Schedule 2.
-Do NOT flag clauses that use different language to say the same thing.
+PASS 5 — DRAFTING DEFECTS
+Flag these regardless of issue_category:
+- Blank fields left unfilled (e.g. '__ years', '________', '[Please fill in]')
+- Clause numbering gaps (e.g. 1, 2, 3, 5 — where is 4?)
+- Defined terms used but not defined, or defined but never used
+- Obligation stated in future tense ('shall execute') when it should be a condition precedent ('has executed')
+- Outdated statute references (Companies Act 1956, old IT Act sections)
 
-Do NOT flag clauses that are:
-- Market-standard and carry no meaningful risk
-- Stylistically imperfect but legally sound
-- Already adequately protective of the client's position
-- Absent from the agreement but also absent from the active_baseline
+═══════════════════════════════════════════════════════
+DRAFT ORIGIN RULES
+═══════════════════════════════════════════════════════
+If draft_origin is 'client': do NOT flag clauses that merely favour the client. Flag only statutory violations, structural inconsistencies, and material risks. Frame negotiation notes as 'counterparty is likely to push back on this.'
+If draft_origin is 'counterparty': flag every improvable clause. Frame negotiation notes as 'push back on this — it is one-sided.'
+If draft_origin is 'unknown': flag everything material regardless of direction.
 
-For missing clauses, set clause_text to "MISSING" and populate missing_clause_description.
+═══════════════════════════════════════════════════════
+OUTPUT RULES
+═══════════════════════════════════════════════════════
+1. Return a JSON object with keys: sections_reviewed, clauses, no_issues_found, clean_agreement_note.
+2. sections_reviewed must list every section_id you examined.
+3. clauses is an array of flagged issues sorted by priority (Critical first).
+4. Do NOT self-censor. If you identify an issue, include it.
+5. If the same clause has two separate issues, create two separate entries.
+6. For Missing Clause entries, set clause_text to 'MISSING' and populate missing_clause_description with what the clause should say.
+7. For Structural Inconsistency, set conflicting_clause_id to the clause_id of the other clause involved.
+8. For Drafting Defect, use issue_category 'Drafting Defect'.
+9. Set no_issues_found to true and populate clean_agreement_note only if genuinely no issues exist.
 
 Return this JSON structure:
 {
-  "agreement_type": "",
-  "client_perspective": "",
-  "applicable_statutes": ["", ""],
-  "total_clauses_flagged": 0,
   "sections_reviewed": ["0", "1", "2"],
+  "no_issues_found": false,
+  "clean_agreement_note": "",
   "clauses": [
     {
       "rank": 1,
       "clause_id": "",
       "clause_name": "",
       "clause_text": "",
-      "issue_category": "Statutory Conflict | Regulatory Non-Compliance | Material Risk | Missing Clause | Structural Inconsistency",
+      "issue_category": "Statutory Conflict | Regulatory Non-Compliance | Material Risk | Missing Clause | Structural Inconsistency | Drafting Defect",
       "conflicting_clause_id": "",
       "applicable_statute": "",
       "priority": "Critical | High | Medium | Low",
       "missing_clause_description": ""
     }
-  ],
-  "no_issues_found": false,
-  "clean_agreement_note": ""
+  ]
 }`;
 
 
@@ -670,10 +674,43 @@ function mergeTablesIntoSegments(segments, tables) {
 
 
 // =============================================================
+// SESSION RESET
+// =============================================================
+function resetSession() {
+  sessionState.classificationJSON = null;
+  sessionState.triageJSON = null;
+  sessionState.currentClauseIndex = 0;
+  sessionState.conversationHistory = [];
+  sessionState.conversationHistoryByClause = {};
+  sessionState.pendingChanges = {};
+  sessionState.rejectedChanges = [];
+  sessionState.suggestionCache = {};
+  sessionState.decisionMap = {};
+  sessionState.documentText = null;
+  sessionState.clauseMap = [];
+  sessionState.tableMap = [];
+  sessionState.definedTerms = [];
+  sessionState.sectionManifest = [];
+  sessionState.draftOrigin = null;
+  sessionState.activeBaseline = [];
+}
+
+async function resetDocumentState() {
+  await Word.run(async (ctx) => {
+    ctx.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+    await ctx.sync();
+  });
+}
+
+
+// =============================================================
 // MAIN ORCHESTRATION
 // =============================================================
 async function runReview(clarificationAnswers = null) {
   try {
+    resetSession();
+    await resetDocumentState();
+
     // Read draft origin from radio
     const originRadio = document.querySelector('input[name="draft-origin"]:checked');
     sessionState.draftOrigin = originRadio ? originRadio.value : 'unknown';
@@ -731,10 +768,11 @@ async function runReview(clarificationAnswers = null) {
       classification: sessionState.classificationJSON,
       draft_origin: sessionState.draftOrigin,
       risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
-      section_manifest: sessionState.sectionManifest,
+      section_manifest: segments.map(s => ({ id: s.section_id, heading: s.heading })),
       active_baseline: sessionState.activeBaseline,
       sections: mergedSegments,
-      instruction: 'Evaluate ALL sections in the sections array. Your output must include sections_reviewed listing every section_id you examined.'
+      defined_terms: sessionState.definedTerms,
+      instruction: 'Run ALL five passes. Return every issue found. Do not stop at 2–3 issues. sections_reviewed must list every section_id examined.'
     });
 
     const call2Text = await callAPI(CALL_2_PROMPT, call2Payload);
@@ -744,14 +782,6 @@ async function runReview(clarificationAnswers = null) {
       showCleanScreen();
       return;
     }
-
-    // Reset navigation state
-    sessionState.currentClauseIndex = 0;
-    sessionState.pendingChanges = {};
-    sessionState.rejectedChanges = [];
-    sessionState.suggestionCache = {};
-    sessionState.decisionMap = {};
-    sessionState.conversationHistoryByClause = {};
 
     await navigateTo(0);
 
@@ -1336,7 +1366,7 @@ async function findRange(context, originalText) {
   for (const len of [originalText.length, 200, 150, 100, 60, 40]) {
     if (len > originalText.length) continue;
     const hit = await trySearch(originalText.substring(0, len));
-    if (hit) { console.log(`[findRange] S1 matched at len=${len}:`, originalText.substring(0, len)); return hit; }
+    if (hit) return hit;
   }
 
   // Strategy 2 — strip leading clause number ("8.    " etc.) and retry.
