@@ -244,11 +244,18 @@ OUTPUT — LOW CONFIDENCE:
 // =============================================================
 const CALL_2_PROMPT = `You are a contract triage engine operating inside a Microsoft Word add-in used by practising lawyers in India.
 
-You will receive:
-1. A classification JSON object from Call 1 (including risk_posture and draft_origin)
-2. A section manifest — array of section headings extracted from the actual document
-3. The full segmented agreement text (sections array, including any tables)
-4. An active_baseline — the subset of the 22-section standard baseline applicable to this agreement type
+You will receive ONE of two input formats depending on the document structure:
+
+FORMAT A — Named sections (document has explicit section headings):
+  section_manifest: array of section headings, sections: array of {section_id, heading, text}
+
+FORMAT B — Numbered paragraphs (document has no named headings, e.g. "1. The Vendor agrees...", "8. The Purchaser shall indemnify..."):
+  document_text: the full raw agreement text as a single string
+
+In both cases you also receive:
+- classification: JSON from Call 1 (agreement type, risk_posture, applicable statutes)
+- active_baseline: the subset of the 22-section standard baseline for this agreement type
+- draft_origin and risk_posture
 
 Your task is to identify every clause that warrants a suggested change and return them as an ordered list — highest priority first.
 
@@ -259,7 +266,15 @@ RISK POSTURE INSTRUCTIONS:
 - risk_posture = "aggressive" (client draft): flag ONLY statutory conflicts, regulatory non-compliance, and missing mandatory clauses. Do NOT flag clauses that merely favour the client.
 - risk_posture = "neutral": balanced analysis — flag all meaningful risks.
 
-MISSING CLAUSE INSTRUCTION: Only flag a section as missing if it is present in the active_baseline AND its legal substance is genuinely absent from the document. Do NOT conclude a clause is missing merely because its name does not appear as a heading in section_manifest — many Indian contracts use numbered paragraphs without named section headings (e.g. "8. The Purchaser shall indemnify..." rather than a dedicated "Indemnification" heading). Always look at the full content of the sections array to determine whether the clause substance is actually covered. Do NOT flag sections that are not in the active_baseline for this agreement type.
+NUMBERED PARAGRAPH DOCUMENTS (FORMAT B):
+When document_text is provided instead of sections, the contract uses numbered paragraphs with no section headings. You must:
+1. Read the full document_text carefully.
+2. For each numbered paragraph, identify what legal clause type it represents (e.g. paragraph "8. The Purchaser shall indemnify..." is an indemnification clause).
+3. Flag issues with EXISTING clauses as "Statutory Conflict", "Regulatory Non-Compliance", "Material Risk", or "Structural Inconsistency" — set clause_text to the VERBATIM numbered paragraph text from the document.
+4. Only use issue_category "Missing Clause" (clause_text: "MISSING") for clause types where you genuinely cannot find any corresponding content anywhere in the document_text.
+5. Do NOT flag a clause as missing just because it lacks a titled heading — substance presence, not heading presence, determines whether a clause exists.
+
+MISSING CLAUSE INSTRUCTION (both formats): Only flag a section as missing if it is present in the active_baseline AND its legal substance is genuinely absent from the document. Do NOT flag sections that are not in the active_baseline for this agreement type.
 
 Return only valid JSON. No preamble or explanation outside the JSON object. Temperature is set to 0. Be deterministic.
 
@@ -303,8 +318,6 @@ Do NOT flag clauses that are:
 - Absent from the agreement but also absent from the active_baseline
 
 For missing clauses, set clause_text to "MISSING" and populate missing_clause_description.
-
-SECTION MANIFEST INSTRUCTION: Evaluate ALL sections listed in section_manifest. Your output must include sections_reviewed listing every section_id you examined.
 
 Return this JSON structure:
 {
@@ -694,28 +707,29 @@ async function runReview(clarificationAnswers = null) {
 
     // Detect document structure: named sections vs numbered paragraphs with no headings
     const hasNamedSections = segments.some(s => s.heading !== 'Preamble');
-    const call2Instruction = hasNamedSections
-      ? 'Evaluate ALL sections listed in section_manifest. Your output must include sections_reviewed listing every section_id you examined.'
-      : 'CRITICAL: This document uses numbered paragraphs with NO named section headings. ' +
-        'section_manifest only contains "Preamble" because no headings were detected — this does NOT mean ' +
-        'the clauses are absent. The entire document text is in sections[0].text. ' +
-        'You MUST read the full numbered paragraph content in sections[0].text to determine what substance is present. ' +
-        'Only mark a clause as issue_category "Missing Clause" with clause_text "MISSING" if you genuinely ' +
-        'cannot find that clause\'s legal substance anywhere in the numbered paragraphs. ' +
-        'For clauses that DO exist (even under a number like "8. The Purchaser shall indemnify..."), ' +
-        'set issue_category to "Statutory Conflict", "Material Risk", etc. and set clause_text to the verbatim paragraph text. ' +
-        'Do NOT use section_manifest to judge what is missing — use the actual document content.';
 
-    const call2Payload = JSON.stringify({
-      classification: sessionState.classificationJSON,
-      draft_origin: sessionState.draftOrigin,
-      risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
-      section_manifest: sessionState.sectionManifest,
-      active_baseline: sessionState.activeBaseline,
-      sections: mergedSegments,
-      document_structure: hasNamedSections ? 'named_sections' : 'numbered_paragraphs_no_headings',
-      instruction: call2Instruction
-    });
+    // FORMAT A: named sections → send structured sections + manifest
+    // FORMAT B: numbered paragraphs → send raw document_text, no sections/manifest
+    // (sending manifest=["Preamble"] alongside a 22-item baseline causes the AI
+    //  to conclude all 21 non-Preamble sections are missing — avoid entirely)
+    const call2Payload = hasNamedSections
+      ? JSON.stringify({
+          classification: sessionState.classificationJSON,
+          draft_origin: sessionState.draftOrigin,
+          risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
+          section_manifest: sessionState.sectionManifest,
+          active_baseline: sessionState.activeBaseline,
+          sections: mergedSegments,
+          instruction: 'Evaluate ALL sections listed in section_manifest. Your output must include sections_reviewed listing every section_id you examined.'
+        })
+      : JSON.stringify({
+          classification: sessionState.classificationJSON,
+          draft_origin: sessionState.draftOrigin,
+          risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
+          active_baseline: sessionState.activeBaseline,
+          document_text: sessionState.documentText,
+          instruction: 'FORMAT B: numbered-paragraph document. Read document_text in full. Identify clause types by their substance. Flag issues with existing clauses as Statutory Conflict / Material Risk / etc. Only use Missing Clause for substance genuinely absent.'
+        });
 
     const call2Text = await callAPI(CALL_2_PROMPT, call2Payload, 6000);
     sessionState.triageJSON = parseJSON(call2Text);
