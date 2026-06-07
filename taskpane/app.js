@@ -474,7 +474,7 @@ const sessionState = {
 // =============================================================
 // API HELPERS
 // =============================================================
-async function callAPI(systemPrompt, userContent, maxTokens = 4000) {
+async function callAPI(systemPrompt, userContent, maxTokens = 8192) {
   const response = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -489,7 +489,7 @@ async function callAPI(systemPrompt, userContent, maxTokens = 4000) {
   return data.text;
 }
 
-async function callChat(systemPrompt, messages, maxTokens = 4000) {
+async function callChat(systemPrompt, messages, maxTokens = 8192) {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -501,7 +501,11 @@ async function callChat(systemPrompt, messages, maxTokens = 4000) {
 }
 
 function parseJSON(text) {
-  const clean = text.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+  let clean = text.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+  // Strip any prose Claude adds before/after the JSON object
+  const start = clean.indexOf('{');
+  const end   = clean.lastIndexOf('}');
+  if (start >= 0 && end > start) clean = clean.slice(start, end + 1);
   return JSON.parse(clean);
 }
 
@@ -895,7 +899,7 @@ async function navigateTo(index) {
     });
 
     const messages = [{ role: 'user', content: call3Payload }];
-    const responseText = await callChat(CALL_3_PROMPT, messages, 4000);
+    const responseText = await callChat(CALL_3_PROMPT, messages);
     const suggestion = parseJSON(responseText);
 
     // Resolve original_text in priority order:
@@ -1397,7 +1401,7 @@ async function onAskAI() {
       ...sessionState.conversationHistory
     ];
 
-    const responseText = await callChat(CALL_3_PROMPT, messages, 4000);
+    const responseText = await callChat(CALL_3_PROMPT, messages);
     const updated = parseJSON(responseText);
 
     sessionState.conversationHistory.push({ role: 'assistant', content: responseText });
