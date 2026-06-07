@@ -729,6 +729,19 @@ async function runReview(clarificationAnswers = null) {
     const call2Text = await callAPI(CALL_2_PROMPT, call2Payload, 6000);
     sessionState.triageJSON = parseJSON(call2Text);
 
+    // DEBUG — open browser devtools console to see triage output
+    console.log('[TRIAGE RAW]', call2Text.substring(0, 500));
+    console.log('[TRIAGE CLAUSES]', (sessionState.triageJSON.clauses || []).map(c => ({
+      name: c.clause_name,
+      category: c.issue_category,
+      text: (c.clause_text || '').substring(0, 60)
+    })));
+    console.log('[SEGMENTS]', sessionState.clauseMap.map(s => ({
+      heading: s.heading,
+      textLen: (s.text || '').length,
+      text: (s.text || '').substring(0, 60)
+    })));
+
     if (sessionState.triageJSON.no_issues_found) {
       showCleanScreen();
       return;
