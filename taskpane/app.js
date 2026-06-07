@@ -1,4 +1,3 @@
-// Catch any script load errors and surface them visibly
 window.onerror = (msg, src, line) => {
   document.body.innerHTML = `<div style="padding:20px;color:red;font-family:monospace">
     <b>Script error</b><br>${msg}<br>${src}:${line}
@@ -6,11 +5,53 @@ window.onerror = (msg, src, line) => {
 };
 
 // =============================================================
+// BASELINE STRUCTURE — 22 sections, five zones
+// =============================================================
+const BASELINE_SECTIONS = [
+  '1. Parties', '2. Background / Recitals', '3. Definitions', '4. Scope of Agreement',
+  '5. Services / Obligations', '6. Fees and Payment', '7. Term', '8. Milestones / Deliverables',
+  '9. Representations and Warranties', '10. Indemnification', '11. Limitation of Liability',
+  '12. Confidentiality', '13. Data Protection / Privacy', '14. IP Ownership / Licence',
+  '15. Termination', '16. Force Majeure', '17. Assignment',
+  '18. Governing Law', '19. Dispute Resolution / Arbitration', '20. Notices',
+  '21. Miscellaneous / Boilerplate', '22. Execution / Signature Block'
+];
+
+const BASELINE_VARIANTS = {
+  'NDA': [1,2,3,4,10,11,18,19,20,21],
+  'Employment Agreement': [1,2,3,4,5,6,7,8,9,10,15,16,17,18,19,20,21],
+  'MSA': null,
+  'SaaS Agreement': null,
+  'Service Agreement': null,
+  'Consulting Agreement': [1,2,3,4,5,6,7,8,9,10,11,12,15,16,18,19,20,21],
+  'SOW': [1,2,3,4,5,6,7,8,15,20,21],
+  'Shareholders Agreement': [1,2,3,4,6,7,10,11,15,17,18,19,20,21],
+  'Loan Agreement': [1,2,3,4,6,7,10,11,15,18,19,20,21],
+  'Lease Agreement': [1,2,3,4,5,6,7,15,18,19,20,21],
+};
+
+function selectBaselineVariant(agreementType, multiAgreementFlag, allTypes) {
+  if (multiAgreementFlag && allTypes && allTypes.length > 1) {
+    const indices = new Set();
+    allTypes.forEach(t => {
+      const v = BASELINE_VARIANTS[t];
+      if (v) v.forEach(i => indices.add(i));
+      else BASELINE_SECTIONS.forEach((_, i) => indices.add(i + 1));
+    });
+    return [...indices].sort((a, b) => a - b).map(i => BASELINE_SECTIONS[i - 1]);
+  }
+  const variant = BASELINE_VARIANTS[agreementType];
+  if (!variant) return BASELINE_SECTIONS;
+  return variant.map(i => BASELINE_SECTIONS[i - 1]);
+}
+
+
+// =============================================================
 // CALL 1 — CLASSIFICATION PROMPT
 // =============================================================
 const CALL_1_PROMPT = `You are an expert contract classification engine operating inside a Microsoft Word add-in used by practising lawyers in India.
 
-Your sole objective is to classify the agreement, infer the lawyer's client perspective, and produce a structured JSON handoff package for downstream review calls.
+Your sole objective is to classify the agreement, infer the lawyer's client perspective, determine risk posture from the draft origin, and produce a structured JSON handoff package for downstream review calls.
 
 All analysis is governed by Indian law. The Indian Contract Act 1872 is the primary statute. Apply all relevant Indian statutory overlays based on the agreement type identified.
 
@@ -48,7 +89,7 @@ Purchase Agreement: Sale of Goods Act 1930 | Indian Contract Act 1872 | GST Act 
 MULTI-AGREEMENT FLAG:
 If the document contains more than one agreement type embedded within it, flag this and identify:
 - The primary agreement type (the governing document)
-- The secondary agreement type(s)
+- The secondary agreement type(s) in all_agreement_types
 - Which to prioritise for review
 - Which additional statutory overlays apply to secondary types
 
@@ -69,13 +110,24 @@ Determine:
 If perspective_confidence is below 80, populate perspective_caveat with a note that risk assessments may need reframing if the perspective is incorrect.
 
 ═══════════════════════════════════════════════════════
-TASK 3: DETERMINE REVIEW PRIORITIES
+TASK 3: RISK POSTURE FROM DRAFT ORIGIN
+═══════════════════════════════════════════════════════
+
+The user has provided a draft_origin value indicating who prepared this draft.
+
+Determine risk_posture as follows:
+- draft_origin = "counterparty": risk_posture = "defensive" — the draft is likely skewed against the client. Flag everything improvable. Frame negotiation notes as counterparty is likely to push back.
+- draft_origin = "client": risk_posture = "aggressive" — the draft favours the client. Do not flag clauses that merely favour the client; flag only statutory problems.
+- draft_origin = "third party" or "unknown": risk_posture = "neutral" — balanced analysis.
+
+═══════════════════════════════════════════════════════
+TASK 4: DETERMINE REVIEW PRIORITIES
 ═══════════════════════════════════════════════════════
 
 Identify the review priorities for this agreement type and client perspective under Indian law. Rank from highest to lowest priority. For each provide a one-line reason anchored to the specific Indian statutory or common law risk.
 
 ═══════════════════════════════════════════════════════
-TASK 3B: ENHANCED SCRUTINY AREAS
+TASK 4B: ENHANCED SCRUTINY AREAS
 ═══════════════════════════════════════════════════════
 
 Identify 2–4 areas requiring deeper analysis. An area qualifies if ANY of the following apply:
@@ -84,10 +136,8 @@ Identify 2–4 areas requiring deeper analysis. An area qualifies if ANY of the 
 - The clause involves a provision that is unenforceable or restricted under Indian law regardless of what the parties have agreed
 - Regulatory compliance exposure exists under Indian law
 
-For each provide: area name, specific Indian statute or case law basis, why it qualifies for enhanced scrutiny.
-
 ═══════════════════════════════════════════════════════
-TASK 4: CONFIDENCE DECISION ENGINE
+TASK 5: CONFIDENCE DECISION ENGINE
 ═══════════════════════════════════════════════════════
 
 IF agreement_type_confidence >= 85: confidence_status = "HIGH" — emit full JSON.
@@ -103,6 +153,7 @@ OUTPUT — HIGH OR MEDIUM CONFIDENCE:
     "key_indicators": ["", "", ""],
     "applicable_statutes": ["", "", ""],
     "multi_agreement_flag": false,
+    "all_agreement_types": [],
     "secondary_agreement_types": [],
     "alternative_classifications": [{ "type": "", "confidence": 0, "reason": "" }]
   },
@@ -112,16 +163,13 @@ OUTPUT — HIGH OR MEDIUM CONFIDENCE:
     "perspective_indicators": ["", ""],
     "perspective_caveat": ""
   },
+  "risk_posture": "aggressive | defensive | neutral",
   "confidence": {
     "status": "HIGH",
     "assumptions_made": []
   },
   "review_priorities": [
-    { "rank": 1, "area": "", "reason": "", "statute": "" },
-    { "rank": 2, "area": "", "reason": "", "statute": "" },
-    { "rank": 3, "area": "", "reason": "", "statute": "" },
-    { "rank": 4, "area": "", "reason": "", "statute": "" },
-    { "rank": 5, "area": "", "reason": "", "statute": "" }
+    { "rank": 1, "area": "", "reason": "", "statute": "" }
   ],
   "enhanced_scrutiny_areas": [
     { "area": "", "statute_or_caselaw": "", "reason": "" }
@@ -197,12 +245,21 @@ OUTPUT — LOW CONFIDENCE:
 const CALL_2_PROMPT = `You are a contract triage engine operating inside a Microsoft Word add-in used by practising lawyers in India.
 
 You will receive:
-1. A classification JSON object from Call 1
-2. The full agreement text
+1. A classification JSON object from Call 1 (including risk_posture and draft_origin)
+2. A section manifest — array of section headings extracted from the actual document
+3. The full segmented agreement text (sections array, including any tables)
+4. An active_baseline — the subset of the 22-section standard baseline applicable to this agreement type
 
-Your task is to identify every clause that warrants a suggested change and return them as an ordered list — highest priority first based on the review_priorities in the classification JSON.
+Your task is to identify every clause that warrants a suggested change and return them as an ordered list — highest priority first.
 
 All analysis is governed by Indian law. Apply the applicable statutes from the classification JSON.
+
+RISK POSTURE INSTRUCTIONS:
+- risk_posture = "defensive" (counterparty draft): flag everything improvable for the client.
+- risk_posture = "aggressive" (client draft): flag ONLY statutory conflicts, regulatory non-compliance, and missing mandatory clauses. Do NOT flag clauses that merely favour the client.
+- risk_posture = "neutral": balanced analysis — flag all meaningful risks.
+
+MISSING CLAUSE INSTRUCTION: Only flag a section as missing if it is present in the active_baseline AND absent from the section_manifest. Do NOT flag sections that are not in the active_baseline for this agreement type.
 
 Return only valid JSON. No preamble or explanation outside the JSON object. Temperature is set to 0. Be deterministic.
 
@@ -223,27 +280,31 @@ Examples:
 - No GST clause in a commercial agreement
 - Missing RBI compliance obligations where a regulated entity is a party
 
-MATERIAL RISK TO CLIENT: The clause creates a meaningful legal or commercial risk for the client's position that a competent lawyer would advise redlining. This includes:
+MATERIAL RISK TO CLIENT: The clause creates a meaningful legal or commercial risk for the client that a competent lawyer would advise redlining.
 - Uncapped or inadequately capped liability
 - Unilateral termination rights without cause or notice
-- Broad indemnification obligations that exceed S.124 Contract Act scope
-- IP assignment clauses that strip the client of rights they should retain
-- Governing law or dispute resolution clauses that disadvantage the client's enforcement position
+- Broad indemnification obligations exceeding S.124 Contract Act scope
+- IP assignment clauses stripping rights the client should retain
+- Governing law or dispute resolution clauses that disadvantage enforcement
 
-MISSING CLAUSE: A clause that is absent from the agreement but is required either by Indian law or as a matter of standard legal practice for this agreement type.
+MISSING CLAUSE: A clause absent from the agreement that is required by Indian law or as a matter of standard legal practice for this agreement type — AND present in the active_baseline provided.
+
+STRUCTURAL INCONSISTENCY: Two or more clauses in this agreement contradict each other on the same legal point such that both cannot be simultaneously true or enforceable. Flag the weaker or less client-protective clause. Set conflicting_clause_id to the clause_id of the other clause involved.
 Examples:
-- No dispute resolution clause
-- No governing law clause
-- No data protection clause where DPDP Act applies
-- No stamp duty clause in a commercial agreement
-- No force majeure clause
+- Clause 3.1 implies contract ends on delivery milestone with no notice; Clause 14.2 requires 30-day notice for termination.
+- A term is defined one way in Clause 1 but used differently in Clause 9.
+- Payment terms are 30 days in Clause 5 but 45 days in Schedule 2.
+Do NOT flag clauses that use different language to say the same thing.
 
 Do NOT flag clauses that are:
 - Market-standard and carry no meaningful risk
 - Stylistically imperfect but legally sound
 - Already adequately protective of the client's position
+- Absent from the agreement but also absent from the active_baseline
 
 For missing clauses, set clause_text to "MISSING" and populate missing_clause_description.
+
+SECTION MANIFEST INSTRUCTION: Evaluate ALL sections listed in section_manifest. Your output must include sections_reviewed listing every section_id you examined.
 
 Return this JSON structure:
 {
@@ -251,13 +312,15 @@ Return this JSON structure:
   "client_perspective": "",
   "applicable_statutes": ["", ""],
   "total_clauses_flagged": 0,
+  "sections_reviewed": ["0", "1", "2"],
   "clauses": [
     {
       "rank": 1,
       "clause_id": "",
       "clause_name": "",
       "clause_text": "",
-      "issue_category": "Statutory Conflict | Regulatory Non-Compliance | Material Risk | Missing Clause",
+      "issue_category": "Statutory Conflict | Regulatory Non-Compliance | Material Risk | Missing Clause | Structural Inconsistency",
+      "conflicting_clause_id": "",
       "applicable_statute": "",
       "priority": "Critical | High | Medium | Low",
       "missing_clause_description": ""
@@ -274,17 +337,30 @@ Return this JSON structure:
 const CALL_3_PROMPT = `You are a senior contract lawyer and negotiation advisor operating inside a Microsoft Word add-in. Your user is a practising lawyer in India reviewing an agreement on behalf of their client.
 
 You will receive:
-1. A classification JSON object from Call 1
-2. A single clause object from the triage JSON — including clause name, clause text, issue category, applicable statute, and priority
-3. Optionally: a conversation history array if the lawyer has asked follow-up questions on this clause
+1. A classification JSON object from Call 1 (including risk_posture and draft_origin)
+2. A single clause object from the triage JSON
+3. Optionally: conversation_history if the lawyer has asked follow-up questions
+4. pending_changes: a list of changes already accepted in this review session — check if any affect the risk profile of this clause
+5. section_manifest: the actual section headings from the document (use verbatim headings for insert_anchor)
+6. baseline_sections: the standard baseline for this agreement type
+7. defined_terms: list of defined terms extracted from the Definitions clause
 
 All advice is governed by Indian law. Cite specific Indian statutes, rules, and leading cases where relevant.
 
-Your suggested language must be draft-quality — at the standard of a trained solicitor, ready to be accepted and inserted into the agreement without further editing. Use defined terms consistent with the agreement's drafting style. Do not introduce undefined terms.
+Your suggested language must be draft-quality — at the standard of a trained solicitor, ready to be accepted and inserted into the agreement without further editing. Use ONLY defined terms from the defined_terms list provided. If you need a term not in the list, either write around it in plain language OR include it in undefined_terms_used with a suggested definition.
+
+DRAFT ORIGIN INSTRUCTIONS:
+- risk_posture = "defensive": frame all suggestions strongly in the client's favour.
+- risk_posture = "aggressive": flag only statutory problems; suggestions should be more balanced.
+- risk_posture = "neutral": balanced approach.
+
+PENDING CHANGES: Review the pending_changes list. If any accepted change affects the risk profile of the current clause (e.g. a deleted non-compete shifts post-term restraint weight to the confidentiality clause), set downstream_impact to a plain-English explanation. Set to null if no dependency exists.
+
+MISSING CLAUSE INSERTION: For change_type "Insert", set insert_anchor to a verbatim heading string from section_manifest — find where this clause type appears in baseline_sections, identify its predecessor section, then map to the nearest matching heading in section_manifest. Set insert_mode to "after_section" or "sub_clause". Set insert_position_note to a plain-English sentence explaining the placement.
 
 Temperature is set to 0. Be deterministic. Return only valid JSON. No preamble or explanation outside the JSON object.
 
-If a conversation history is provided:
+If conversation_history is provided:
 - Address the lawyer's most recent message directly
 - Revise the suggestion if requested
 - Answer negotiation strategy questions in the legal_analysis field
@@ -294,35 +370,43 @@ If a conversation history is provided:
 ANALYSIS FRAMEWORK
 ═══════════════════════════════════════════════════════
 
-For every clause apply this framework:
-
 1. STATUTORY POSITION: What does Indian law say about this clause type? Cite the specific provision. Is the current drafting enforceable as written?
 
-2. CURRENT DRAFTING RISK: What is the specific legal or commercial risk created by the current language for the client? Be precise — name the risk, not a category.
+2. CURRENT DRAFTING RISK: What is the specific legal or commercial risk created by the current language for the client?
 
-3. SUGGESTED POSITION: What should the clause say? Draft the replacement language. It must be legally sound under Indian law, consistent with the agreement's defined terms and drafting style, appropriate for the client's perspective, and defensible in negotiations with the counterparty.
+3. SUGGESTED POSITION: Draft the replacement language. Legally sound under Indian law, consistent with the agreement's defined terms and drafting style, appropriate for the client's perspective.
 
-4. NEGOTIATION RATIONALE: Why should the client push for this change? What is the fallback position if the counterparty resists? What would a court look at if this clause were disputed?
+4. NEGOTIATION RATIONALE: Why should the client push for this change? What is the fallback position? What would a court look at if this clause were disputed?
 
-FOR MISSING CLAUSES: Draft a complete clause from scratch. It must be market-standard under Indian law for this agreement type and client perspective. State where in the agreement it should be inserted.
+FOR MISSING CLAUSES: Draft a complete clause from scratch. Market-standard under Indian law for this agreement type and client perspective.
 
 ═══════════════════════════════════════════════════════
 FIELD DEFINITIONS
 ═══════════════════════════════════════════════════════
 
-issue_summary: Two to three sentences. State the legal problem with the current drafting, the Indian law basis, and the consequence for the client if left unchanged. Write for a lawyer — use correct legal terminology.
+issue_summary: Two to three sentences. State the legal problem, Indian law basis, and consequence for the client if unchanged. Write for a lawyer — use correct legal terminology.
 
-legal_analysis: Detailed legal reasoning. Cite statutes by section number. Reference leading Indian cases where directly relevant (e.g. ONGC v Saw Pipes for S.74 liquidated damages; Nirma Ltd v Lurgi for scope of indemnity; Centrotrade for seat vs venue of arbitration). Explain enforceability, risk, and the statutory limit on what the parties can agree.
+legal_analysis: Detailed legal reasoning. Cite statutes by section number. Reference leading Indian cases where relevant (e.g. ONGC v Saw Pipes for S.74; Nirma Ltd v Lurgi for indemnity scope; Centrotrade for seat vs venue of arbitration).
 
-original_text: Verbatim text from the agreement exactly as it appears. This will be used by the add-in to locate the text in the Word document using string search. Do not paraphrase or truncate. For missing clauses: set to "MISSING".
+original_text: Verbatim text from the agreement exactly as it appears. Used for string search in Word. Do not paraphrase or truncate. For missing clauses: set to "MISSING".
 
 suggested_text: Complete replacement clause, ready to insert. For missing clauses: complete draft clause. For deletions: set to "DELETE".
 
-negotiation_note: What to say to the counterparty when proposing this change. What is the fallback position if they resist? What concession can the client make without materially harming their position? Write as a practical negotiation guide for the lawyer.
+fallback_text: A middle-ground version the client could accept if the counterparty resists. Must still be legally sound. If no meaningful fallback exists, state why.
 
-fallback_text: A middle-ground version of the suggested_text the client could accept if the counterparty resists the primary suggestion. Must still be legally sound. If no meaningful fallback exists, state why.
+negotiation_note: What to say to the counterparty. Fallback position. What concession can the client make without material harm. Practical negotiation guide for the lawyer.
 
-confidence_score: 0–100. 90–100: Unambiguous Indian law position — settled statute or Supreme Court authority. 75–89: Well-established practice — High Court authority or strong commercial standard. 60–74: Reasonable position — some judicial variation or fact-dependency. Below 60: Unsettled law or highly fact-specific — flag for independent legal judgment.
+confidence_score: 0–100. 90–100: Unambiguous Indian law — settled statute or Supreme Court authority. 75–89: Well-established practice — High Court authority. 60–74: Reasonable position — some variation. Below 60: Unsettled law — flag for independent judgment.
+
+downstream_impact: Non-null string if any accepted pending_change affects the risk profile of this clause. Null otherwise.
+
+undefined_terms_used: Array of objects { term, suggested_definition } for any term in suggested_text or fallback_text not found in defined_terms. Empty array [] if all terms are defined.
+
+insert_anchor: For change_type "Insert" only — verbatim heading string from section_manifest after which to insert. Null if no suitable anchor exists.
+
+insert_mode: "after_section" or "sub_clause".
+
+insert_position_note: Plain-English one sentence shown in the task pane explaining why this position was chosen.
 
 ═══════════════════════════════════════════════════════
 OUTPUT
@@ -330,7 +414,7 @@ OUTPUT
 
 {
   "clause_name": "",
-  "issue_category": "Statutory Conflict | Regulatory Non-Compliance | Material Risk | Missing Clause",
+  "issue_category": "Statutory Conflict | Regulatory Non-Compliance | Material Risk | Missing Clause | Structural Inconsistency",
   "applicable_statute": "",
   "issue_summary": "",
   "legal_analysis": "",
@@ -339,7 +423,11 @@ OUTPUT
   "fallback_text": "",
   "negotiation_note": "",
   "change_type": "Replace | Insert | Delete",
-  "insert_location": "",
+  "insert_anchor": null,
+  "insert_mode": "after_section",
+  "insert_position_note": "",
+  "downstream_impact": null,
+  "undefined_terms_used": [],
   "confidence_score": 0,
   "confidence_rationale": "",
   "user_message_addressed": "",
@@ -350,23 +438,30 @@ OUTPUT
 // =============================================================
 // SESSION STATE
 // =============================================================
-const session = {
+const sessionState = {
   classificationJSON: null,
   triageJSON: null,
-  clauseSuggestions: [],
-  conversationHistory: [],
   currentClauseIndex: 0,
-  acceptedChanges: [],
-  skippedChanges: [],
-  documentText: null
+  conversationHistory: [],
+  conversationHistoryByClause: {},
+  pendingChanges: {},          // { clauseIndex: suggestionObj } — deferred apply
+  rejectedChanges: [],
+  suggestionCache: {},         // { clauseIndex: suggestionObj }
+  decisionMap: {},             // { clauseIndex: 'accepted'|'accepted_fallback'|'rejected'|null }
+  documentText: null,
+  clauseMap: [],
+  tableMap: [],
+  definedTerms: [],
+  draftOrigin: 'counterparty',
+  sectionManifest: [],
+  activeBaseline: [],
 };
 
 
 // =============================================================
 // API HELPERS
 // =============================================================
-
-async function callAPI(systemPrompt, userContent, maxTokens = 3000) {
+async function callAPI(systemPrompt, userContent, maxTokens = 4000) {
   const response = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -381,7 +476,7 @@ async function callAPI(systemPrompt, userContent, maxTokens = 3000) {
   return data.text;
 }
 
-async function callChat(systemPrompt, messages, maxTokens = 3000) {
+async function callChat(systemPrompt, messages, maxTokens = 4000) {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -415,7 +510,7 @@ function setLoading(text, sub = '') {
 
 
 // =============================================================
-// OFFICE.JS — DOCUMENT EXTRACTION
+// PRE-PROCESSING
 // =============================================================
 async function extractDocumentText() {
   return await Word.run(async (context) => {
@@ -427,103 +522,291 @@ async function extractDocumentText() {
   });
 }
 
+function extractDefinedTerms(rawText) {
+  const terms = new Set();
+  const quotedPattern = /[“”""]([A-Z][A-Za-z\s]+)["”“"]\s+(?:means|shall mean)/g;
+  const capPattern = /([A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)*)\s+(?:means|shall mean)/g;
+  let m;
+  while ((m = quotedPattern.exec(rawText)) !== null) terms.add(m[1].trim());
+  while ((m = capPattern.exec(rawText)) !== null) terms.add(m[1].trim());
+  return [...terms];
+}
+
+function segmentDocument(rawText) {
+  const headingRegex = /^(\d+\.(?:\d+\.?)*\s+[A-Z][A-Za-z]|[A-Z]{4,}[\s\w]*$)/gm;
+  const segments = [];
+  let lastIndex = 0;
+  let lastHeading = 'Preamble';
+  let segId = 0;
+  let match;
+
+  while ((match = headingRegex.exec(rawText)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({
+        section_id: String(segId++),
+        heading: lastHeading,
+        text: rawText.slice(lastIndex, match.index).trim()
+      });
+    }
+    lastHeading = match[0].trim();
+    lastIndex = match.index;
+  }
+  segments.push({
+    section_id: String(segId),
+    heading: lastHeading,
+    text: rawText.slice(lastIndex).trim()
+  });
+  return segments;
+}
+
+async function extractTables() {
+  return await Word.run(async (ctx) => {
+    const tables = ctx.document.body.tables;
+    tables.load('items');
+    await ctx.sync();
+
+    const result = [];
+    for (let i = 0; i < tables.items.length; i++) {
+      const table = tables.items[i];
+      table.load('rowCount,columnCount');
+      table.rows.load('items');
+      await ctx.sync();
+
+      for (const row of table.rows.items) {
+        row.cells.load('items');
+      }
+      await ctx.sync();
+
+      for (const row of table.rows.items) {
+        for (const cell of row.cells.items) {
+          cell.body.load('text');
+        }
+      }
+      await ctx.sync();
+
+      let md = '';
+      table.rows.items.forEach((row, ri) => {
+        const cells = row.cells.items.map(c => c.body.text.trim());
+        md += '| ' + cells.join(' | ') + ' |\n';
+        if (ri === 0) md += '| ' + cells.map(() => '---').join(' | ') + ' |\n';
+      });
+
+      result.push({
+        table_id: `table_${i}`,
+        source: 'table',
+        markdown: md,
+        row_count: table.rowCount
+      });
+    }
+    return result;
+  }).catch(() => []);
+}
+
+function mergeTablesIntoSegments(segments, tables) {
+  tables.forEach((t, i) => {
+    segments.push({
+      section_id: `table_${i}`,
+      heading: `[TABLE ${i + 1}]`,
+      text: t.markdown,
+      source: 'table'
+    });
+  });
+  return segments;
+}
+
 
 // =============================================================
 // MAIN ORCHESTRATION
 // =============================================================
 async function runReview(clarificationAnswers = null) {
   try {
-    setLoading('Reading document…');
-    session.documentText = await extractDocumentText();
+    // Read draft origin from radio
+    const originRadio = document.querySelector('input[name="draft-origin"]:checked');
+    sessionState.draftOrigin = originRadio ? originRadio.value : 'unknown';
 
-    if (!session.documentText || session.documentText.trim().length < 50) {
+    setLoading('Reading document…');
+    sessionState.documentText = await extractDocumentText();
+
+    if (!sessionState.documentText || sessionState.documentText.trim().length < 50) {
       alert('The document appears to be empty or too short to review. Please ensure a contract is open in Word.');
       showScreen('screen-landing');
       return;
     }
 
+    // Pre-processing
+    setLoading('Pre-processing document…', 'Extracting sections, tables, and defined terms');
+    sessionState.definedTerms = extractDefinedTerms(sessionState.documentText);
+    const segments = segmentDocument(sessionState.documentText);
+    sessionState.sectionManifest = segments.map(s => s.heading);
+    const tables = await extractTables();
+    sessionState.tableMap = tables;
+    const mergedSegments = mergeTablesIntoSegments([...segments], tables);
+    sessionState.clauseMap = mergedSegments;
+
     // Call 1 — Classification
     setLoading('Classifying agreement…', 'Identifying agreement type and applicable Indian statutes');
 
-    let userContent = session.documentText;
+    let userContent = `DRAFT ORIGIN: ${sessionState.draftOrigin}\n\nAGREEMENT TEXT:\n${sessionState.documentText}`;
     if (clarificationAnswers) {
-      userContent = `CLARIFICATION ANSWERS FROM LAWYER:\n${JSON.stringify(clarificationAnswers, null, 2)}\n\nAGREEMENT TEXT:\n${session.documentText}`;
+      userContent = `DRAFT ORIGIN: ${sessionState.draftOrigin}\n\nCLARIFICATION ANSWERS FROM LAWYER:\n${JSON.stringify(clarificationAnswers, null, 2)}\n\nAGREEMENT TEXT:\n${sessionState.documentText}`;
     }
 
     const call1Text = await callAPI(CALL_1_PROMPT, userContent, 2000);
-    session.classificationJSON = parseJSON(call1Text);
+    sessionState.classificationJSON = parseJSON(call1Text);
 
-    // Confidence gate
-    if (session.classificationJSON.confidence && session.classificationJSON.confidence.status === 'LOW') {
-      showConfidenceModal(session.classificationJSON.clarification_required);
+    if (sessionState.classificationJSON.confidence && sessionState.classificationJSON.confidence.status === 'LOW') {
+      showConfidenceModal(sessionState.classificationJSON.clarification_required);
       return;
     }
+
+    // Select baseline variant for this agreement type
+    const cls = sessionState.classificationJSON.classification;
+    sessionState.activeBaseline = selectBaselineVariant(
+      cls.agreement_type,
+      cls.multi_agreement_flag,
+      cls.all_agreement_types || [cls.agreement_type]
+    );
 
     // Call 2 — Triage
     setLoading(
       'Identifying issues…',
-      `Reviewing clauses under ${session.classificationJSON.classification.agreement_type} framework`
+      `Reviewing clauses under ${cls.agreement_type} framework`
     );
 
-    const triageInput = JSON.stringify({
-      classification: session.classificationJSON,
-      agreement_text: session.documentText
+    const call2Payload = JSON.stringify({
+      classification: sessionState.classificationJSON,
+      draft_origin: sessionState.draftOrigin,
+      risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
+      section_manifest: sessionState.sectionManifest,
+      active_baseline: sessionState.activeBaseline,
+      sections: mergedSegments,
+      instruction: 'Evaluate ALL sections listed in section_manifest. Your output must include sections_reviewed listing every section_id you examined.'
     });
 
-    const call2Text = await callAPI(CALL_2_PROMPT, triageInput, 4000);
-    session.triageJSON = parseJSON(call2Text);
+    const call2Text = await callAPI(CALL_2_PROMPT, call2Payload, 6000);
+    sessionState.triageJSON = parseJSON(call2Text);
 
-    // Handle clean agreement
-    if (session.triageJSON.no_issues_found) {
+    if (sessionState.triageJSON.no_issues_found) {
       showCleanScreen();
       return;
     }
 
-    // Begin clause-by-clause review
-    session.currentClauseIndex = 0;
-    session.acceptedChanges = [];
-    session.skippedChanges = [];
-    session.clauseSuggestions = new Array(session.triageJSON.clauses.length).fill(null);
-    await loadClauseCard(0);
+    // Reset navigation state
+    sessionState.currentClauseIndex = 0;
+    sessionState.pendingChanges = {};
+    sessionState.rejectedChanges = [];
+    sessionState.suggestionCache = {};
+    sessionState.decisionMap = {};
+    sessionState.conversationHistoryByClause = {};
+
+    await navigateTo(0);
 
   } catch (err) {
     console.error('Review error:', err);
-    alert('Error during review: ' + err.message + '\n\nMake sure your Azure credentials are set in .env and the server is running.');
+    alert('Error during review: ' + err.message + '\n\nMake sure your OPENAI_API_KEY is set in .env and the server is running.');
     showScreen('screen-landing');
   }
 }
 
 
 // =============================================================
-// CLAUSE CARD — LOAD AND RENDER (Call 3)
+// SEGMENT LOOKUP — verbatim text from clauseMap for reliable searching
 // =============================================================
-async function loadClauseCard(index) {
-  const clause = session.triageJSON.clauses[index];
-  const total = session.triageJSON.clauses.length;
-  session.conversationHistory = [];
+function resolveSegmentText(clause) {
+  const map = sessionState.clauseMap;
+  if (!map || map.length === 0) return null;
 
-  setLoading(
-    `Analysing clause ${index + 1} of ${total}…`,
-    clause.clause_name
-  );
+  const id   = (clause.clause_id   || '').toLowerCase().trim();
+  const name = (clause.clause_name || '').toLowerCase().trim();
+
+  // 1. Match by clause_id prefix in heading (e.g. "14.2" → "14.2 Termination")
+  if (id) {
+    const byId = map.find(seg => {
+      const h = seg.heading.toLowerCase();
+      return h.startsWith(id + ' ') || h.startsWith(id + '.') || h === id;
+    });
+    if (byId && byId.text && byId.text.length > 10) return byId.text;
+  }
+
+  // 2. Match by clause_name substring in heading
+  if (name) {
+    const byName = map.find(seg =>
+      seg.heading.toLowerCase().includes(name)
+    );
+    if (byName && byName.text && byName.text.length > 10) return byName.text;
+  }
+
+  return null;
+}
+
+
+// =============================================================
+// NAVIGATION
+// =============================================================
+async function navigateTo(index) {
+  const total = sessionState.triageJSON.clauses.length;
+  if (index < 0 || index >= total) return;
+
+  // Save conversation history for current clause
+  sessionState.conversationHistoryByClause[sessionState.currentClauseIndex] =
+    [...sessionState.conversationHistory];
+
+  sessionState.currentClauseIndex = index;
+
+  // Restore conversation history for target clause
+  sessionState.conversationHistory =
+    sessionState.conversationHistoryByClause[index] || [];
+
+  const clause = sessionState.triageJSON.clauses[index];
+
+  // Serve from cache if available
+  if (sessionState.suggestionCache[index]) {
+    renderClauseCard(clause, sessionState.suggestionCache[index], index, total);
+    updateNavButtons(index, total);
+    showScreen('screen-clause');
+    return;
+  }
+
+  // Fire Call 3
+  showCardLoadingState(clause, index, total);
 
   try {
-    const messages = [{
-      role: 'user',
-      content: JSON.stringify({
-        classification: session.classificationJSON,
-        clause: clause
-      })
-    }];
+    // Look up verbatim segment text before sending to model
+    const verbatimText = resolveSegmentText(clause);
 
-    const responseText = await callChat(CALL_3_PROMPT, messages, 3000);
+    const call3Payload = JSON.stringify({
+      classification: sessionState.classificationJSON,
+      clause: verbatimText
+        ? { ...clause, clause_text: verbatimText }  // give model the exact text
+        : clause,
+      draft_origin: sessionState.draftOrigin,
+      risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
+      conversation_history: sessionState.conversationHistory,
+      pending_changes: Object.values(sessionState.pendingChanges),
+      section_manifest: sessionState.sectionManifest,
+      baseline_sections: sessionState.activeBaseline,
+      defined_terms: sessionState.definedTerms
+    });
+
+    const messages = [{ role: 'user', content: call3Payload }];
+    const responseText = await callChat(CALL_3_PROMPT, messages, 4000);
     const suggestion = parseJSON(responseText);
-    session.clauseSuggestions[index] = suggestion;
 
-    session.conversationHistory.push({ role: 'user', content: messages[0].content });
-    session.conversationHistory.push({ role: 'assistant', content: responseText });
+    // Override original_text with verbatim segment text so body.search() is guaranteed
+    // to find it — AI quotes are unreliable (casing, whitespace, truncation).
+    if (verbatimText && suggestion.original_text !== 'MISSING' && suggestion.change_type !== 'Insert') {
+      suggestion.original_text = verbatimText;
+    }
+
+    sessionState.suggestionCache[index] = suggestion;
+    sessionState.conversationHistory = [
+      { role: 'user', content: call3Payload },
+      { role: 'assistant', content: responseText }
+    ];
+    sessionState.conversationHistoryByClause[index] = [...sessionState.conversationHistory];
 
     renderClauseCard(clause, suggestion, index, total);
+    updateNavButtons(index, total);
     showScreen('screen-clause');
 
     if (suggestion.original_text && suggestion.original_text !== 'MISSING') {
@@ -533,9 +816,24 @@ async function loadClauseCard(index) {
   } catch (err) {
     console.error('Clause card error:', err);
     alert('Error loading clause suggestion: ' + err.message);
+    showScreen('screen-landing');
   }
 }
 
+function showCardLoadingState(clause, index, total) {
+  setLoading(
+    `Analysing clause ${index + 1} of ${total}…`,
+    clause.clause_name
+  );
+}
+
+function onPrev() { navigateTo(sessionState.currentClauseIndex - 1); }
+function onNext() { navigateTo(sessionState.currentClauseIndex + 1); }
+
+
+// =============================================================
+// RENDER CLAUSE CARD
+// =============================================================
 function renderClauseCard(clause, suggestion, index, total) {
   document.getElementById('progress-text').textContent = `Clause ${index + 1} of ${total}`;
   document.getElementById('progress-fill').style.width = `${((index + 1) / total) * 100}%`;
@@ -544,25 +842,21 @@ function renderClauseCard(clause, suggestion, index, total) {
     suggestion.clause_name || clause.clause_name;
 
   const badge = document.getElementById('priority-badge');
-  const priority = clause.priority.toUpperCase();
+  const priority = (clause.priority || 'HIGH').toUpperCase();
   badge.textContent = priority;
   badge.className = `priority-badge ${priority}`;
 
   document.getElementById('statute-tag').textContent =
     suggestion.applicable_statute || clause.applicable_statute || '';
 
-  document.getElementById('issue-summary').textContent =
-    suggestion.issue_summary || '';
+  document.getElementById('issue-summary').textContent = suggestion.issue_summary || '';
   document.getElementById('original-text').textContent =
     suggestion.original_text === 'MISSING'
       ? '— Clause is missing from the agreement —'
       : (suggestion.original_text || clause.clause_text || '');
-  document.getElementById('suggested-text').textContent =
-    suggestion.suggested_text || '';
-  document.getElementById('negotiation-note').textContent =
-    suggestion.negotiation_note || '';
-  document.getElementById('fallback-text').textContent =
-    suggestion.fallback_text || '';
+  document.getElementById('suggested-text').textContent = suggestion.suggested_text || '';
+  document.getElementById('negotiation-note').textContent = suggestion.negotiation_note || '';
+  document.getElementById('fallback-text').textContent = suggestion.fallback_text || '';
 
   const score = suggestion.confidence_score || 0;
   const confFill = document.getElementById('confidence-bar-fill');
@@ -575,11 +869,284 @@ function renderClauseCard(clause, suggestion, index, total) {
   const responseEl = document.getElementById('ask-ai-response');
   responseEl.classList.add('hidden');
   responseEl.textContent = '';
+
+  // Dependency warning
+  const depWarn = document.getElementById('dependency-warning');
+  const depText = document.getElementById('dependency-warning-text');
+  if (suggestion.downstream_impact) {
+    depText.textContent = suggestion.downstream_impact;
+    depWarn.classList.remove('hidden');
+  } else {
+    depWarn.classList.add('hidden');
+  }
+
+  // Undefined terms warning
+  const termWarn = document.getElementById('undefined-terms-warning');
+  const termText = document.getElementById('undefined-terms-text');
+  const undefinedTerms = suggestion.undefined_terms_used || [];
+  if (undefinedTerms.length > 0) {
+    const termNames = undefinedTerms.map(u => u.term).join(', ');
+    termText.textContent = `Undefined terms in suggestion: ${termNames}. `;
+    termWarn.classList.remove('hidden');
+    // Store for the accept+def button
+    termWarn._undefinedTerms = undefinedTerms;
+  } else {
+    termWarn.classList.add('hidden');
+    termWarn._undefinedTerms = [];
+  }
+
+  // Decision badge & Undo button
+  updateDecisionBadge(index);
+
+  // Update status counts
+  updateStatusCounts();
+}
+
+function updateDecisionBadge(index) {
+  const badge = document.getElementById('decision-badge');
+  const undoBtn = document.getElementById('btn-undo');
+  const decision = sessionState.decisionMap[index];
+
+  if (decision === 'accepted') {
+    badge.textContent = '✔ Accepted';
+    badge.className = 'decision-badge accepted';
+    undoBtn.classList.remove('hidden');
+  } else if (decision === 'accepted_fallback') {
+    badge.textContent = '✔ Accepted Fallback';
+    badge.className = 'decision-badge accepted-fallback';
+    undoBtn.classList.remove('hidden');
+  } else if (decision === 'rejected') {
+    badge.textContent = '✗ Rejected';
+    badge.className = 'decision-badge rejected';
+    undoBtn.classList.remove('hidden');
+  } else {
+    badge.textContent = '';
+    badge.className = 'decision-badge hidden';
+    undoBtn.classList.add('hidden');
+  }
+}
+
+function updateStatusCounts() {
+  const map = sessionState.decisionMap;
+  const total = sessionState.triageJSON ? sessionState.triageJSON.clauses.length : 0;
+  let accepted = 0, fallback = 0, rejected = 0;
+  Object.values(map).forEach(d => {
+    if (d === 'accepted') accepted++;
+    else if (d === 'accepted_fallback') fallback++;
+    else if (d === 'rejected') rejected++;
+  });
+  const pending = total - accepted - fallback - rejected;
+
+  const el = document.getElementById('status-counts');
+  el.innerHTML =
+    `<span class="s-accepted">✔ ${accepted + fallback} accepted${fallback ? ` (${fallback} fallback)` : ''}</span> ` +
+    `<span class="s-rejected">✗ ${rejected} rejected</span> ` +
+    `<span class="s-pending">● ${pending} pending</span>`;
+}
+
+function updateNavButtons(index, total) {
+  document.getElementById('btn-prev').disabled = (index === 0);
+  document.getElementById('btn-next').disabled = (index === total - 1);
+
+  const allVisited = Object.keys(sessionState.suggestionCache).length === total;
+  const finaliseBtn = document.getElementById('btn-finalise');
+  if (index === total - 1 || allVisited) {
+    finaliseBtn.classList.remove('hidden');
+  } else {
+    finaliseBtn.classList.add('hidden');
+  }
 }
 
 
 // =============================================================
-// OFFICE.JS — HIGHLIGHT CURRENT CLAUSE
+// DECISIONS — deferred until Finalise
+// =============================================================
+function onAccept() {
+  const idx = sessionState.currentClauseIndex;
+  const suggestion = sessionState.suggestionCache[idx];
+  if (!suggestion) return;
+
+  sessionState.pendingChanges[idx] = { ...suggestion, accepted_as: 'full' };
+  sessionState.decisionMap[idx] = 'accepted';
+  updateDecisionBadge(idx);
+  updateStatusCounts();
+  onNext();
+}
+
+function onAcceptFallback() {
+  const idx = sessionState.currentClauseIndex;
+  const suggestion = sessionState.suggestionCache[idx];
+  if (!suggestion || !suggestion.fallback_text) return;
+
+  sessionState.pendingChanges[idx] = {
+    ...suggestion,
+    suggested_text: suggestion.fallback_text,
+    accepted_as: 'fallback'
+  };
+  sessionState.decisionMap[idx] = 'accepted_fallback';
+  updateDecisionBadge(idx);
+  updateStatusCounts();
+  onNext();
+}
+
+function onReject() {
+  const idx = sessionState.currentClauseIndex;
+  const suggestion = sessionState.suggestionCache[idx];
+  if (suggestion) {
+    sessionState.rejectedChanges.push(sessionState.triageJSON.clauses[idx]);
+  }
+  delete sessionState.pendingChanges[idx];
+  sessionState.decisionMap[idx] = 'rejected';
+  updateDecisionBadge(idx);
+  updateStatusCounts();
+  onNext();
+}
+
+function onUndoDecision() {
+  const idx = sessionState.currentClauseIndex;
+  delete sessionState.pendingChanges[idx];
+  sessionState.decisionMap[idx] = null;
+  updateDecisionBadge(idx);
+  updateStatusCounts();
+}
+
+function onAcceptAddDefinition() {
+  const idx = sessionState.currentClauseIndex;
+  const suggestion = sessionState.suggestionCache[idx];
+  if (!suggestion) return;
+
+  // Queue the main change
+  sessionState.pendingChanges[idx] = { ...suggestion, accepted_as: 'full' };
+  sessionState.decisionMap[idx] = 'accepted';
+
+  // Queue definition insertions for each undefined term
+  const termWarn = document.getElementById('undefined-terms-warning');
+  const undefinedTerms = termWarn._undefinedTerms || [];
+  undefinedTerms.forEach((u, i) => {
+    const defIdx = `def_${idx}_${i}`;
+    sessionState.pendingChanges[defIdx] = {
+      clause_name: `Definition: ${u.term}`,
+      change_type: 'Insert',
+      original_text: 'MISSING',
+      suggested_text: `"${u.term}" means ${u.suggested_definition}`,
+      insert_anchor: null,
+      insert_position_note: `Definition of "${u.term}" to be inserted in the Definitions clause`,
+      applicable_statute: '',
+      issue_summary: `Adding definition for term "${u.term}" used in suggested redline.`,
+      accepted_as: 'full'
+    };
+  });
+
+  updateDecisionBadge(idx);
+  updateStatusCounts();
+  onNext();
+}
+
+
+// =============================================================
+// FINALISE — batch apply
+// =============================================================
+async function onFinalise() {
+  const accepted = Object.values(sessionState.pendingChanges);
+
+  if (accepted.length === 0) {
+    showSummaryScreen();
+    return;
+  }
+
+  setLoading('Applying changes to document…', 'Writing tracked changes');
+
+  try {
+    await applyAcceptedChanges(accepted);
+  } catch (err) {
+    console.error('Apply error:', err);
+    alert('Error applying some changes: ' + err.message + '\nPartial changes may have been applied. Check the document.');
+  }
+
+  showSummaryScreen();
+}
+
+async function applyAcceptedChanges(accepted) {
+  await Word.run(async (ctx) => {
+    ctx.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+
+    // Queue ALL searches — no sync yet
+    const searchResults = accepted.map(change => {
+      if (change.change_type === 'Insert' || change.original_text === 'MISSING') {
+        const anchor = change.insert_anchor || 'IN WITNESS WHEREOF';
+        return ctx.document.body.search(anchor, { matchCase: false });
+      }
+      return ctx.document.body.search(change.original_text || '', {
+        matchCase: false, matchWholeWord: false
+      });
+    });
+    searchResults.forEach(r => r.load('items'));
+
+    // ONE sync — snapshot all positions
+    await ctx.sync();
+
+    // Apply order: Deletes → Replaces → Inserts
+    const ordered = [
+      ...accepted.map((c, i) => ({ c, i })).filter(x => x.c.change_type === 'Delete'),
+      ...accepted.map((c, i) => ({ c, i })).filter(x => x.c.change_type === 'Replace' || (!x.c.change_type && x.c.original_text !== 'MISSING')),
+      ...accepted.map((c, i) => ({ c, i })).filter(x => x.c.change_type === 'Insert' || x.c.original_text === 'MISSING'),
+    ];
+
+    for (const { c, i } of ordered) {
+      const items = searchResults[i] ? searchResults[i].items : [];
+
+      if (c.change_type === 'Insert' || c.original_text === 'MISSING') {
+        // Use cascade for inserts
+        const target = await resolveInsertionAnchor(c, ctx);
+        if (target) {
+          target.insertParagraph(c.suggested_text, Word.InsertLocation.before);
+          target.insertComment(
+            `[AI REVIEWER — NEW CLAUSE | ${c.applicable_statute || ''}] ${c.insert_position_note || c.issue_summary}`
+          );
+        }
+      } else if (items.length > 0) {
+        const target = items[0];
+        if (c.change_type === 'Delete') {
+          target.insertText('', Word.InsertLocation.replace);
+        } else {
+          target.insertText(c.suggested_text, Word.InsertLocation.replace);
+        }
+        target.insertComment(`[AI REVIEWER | ${c.applicable_statute || ''}] ${c.issue_summary}`);
+      } else {
+        // Can't locate — leave a comment
+        ctx.document.body.paragraphs.getLast().insertComment(
+          `[AI REVIEWER — APPLY MANUALLY]\nClause: ${c.clause_name}\n${c.issue_summary}\n\nSUGGESTED:\n${c.suggested_text}`
+        );
+      }
+    }
+
+    await ctx.sync();
+    ctx.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+    await ctx.sync();
+  });
+}
+
+async function resolveInsertionAnchor(change, ctx) {
+  const anchorsToTry = [];
+  if (change.insert_anchor) anchorsToTry.push(change.insert_anchor);
+  anchorsToTry.push('IN WITNESS WHEREOF');
+
+  for (const anchor of anchorsToTry) {
+    const results = ctx.document.body.search(anchor, { matchCase: false });
+    results.load('items');
+    await ctx.sync();
+    if (results.items.length > 0) return results.items[0];
+  }
+
+  const paras = ctx.document.body.paragraphs;
+  paras.load('items');
+  await ctx.sync();
+  return paras.getLast();
+}
+
+
+// =============================================================
+// HIGHLIGHTING
 // =============================================================
 const PRIORITY_HIGHLIGHT = {
   CRITICAL: 'Red',
@@ -620,33 +1187,25 @@ async function clearHighlight(originalText) {
   }
 }
 
-
-// =============================================================
-// OFFICE.JS — APPLY ACCEPTED CHANGES AS WORD TRACK CHANGES
-// =============================================================
 async function findRange(context, originalText) {
   if (!originalText || originalText.trim().length < 5) return null;
 
   async function trySearch(candidate) {
     if (!candidate || candidate.trim().length < 10) return null;
     const results = context.document.body.search(candidate.trim(), {
-      matchCase: false,
-      matchWholeWord: false
+      matchCase: false, matchWholeWord: false
     });
     results.load('items');
     await context.sync();
     return results.items.length > 0 ? results.items[0] : null;
   }
 
-  // Strategy 1 — progressively shorter prefixes
   for (const len of [originalText.length, 200, 150, 100, 60, 40]) {
     if (len > originalText.length) continue;
     const hit = await trySearch(originalText.substring(0, len));
     if (hit) return hit;
   }
 
-  // Strategy 2 — individual sentences (AI often quotes mid-clause accurately
-  // even when it paraphrases the opening)
   const sentences = originalText
     .split(/(?<=[.;])\s+/)
     .map(s => s.trim())
@@ -658,102 +1217,6 @@ async function findRange(context, originalText) {
   }
 
   return null;
-}
-
-// =============================================================
-// ACCEPT / SKIP — changes applied immediately on Accept
-// =============================================================
-// ACCEPT / SKIP — changes applied immediately on Accept
-// =============================================================
-async function onAccept() {
-  const suggestion = session.clauseSuggestions[session.currentClauseIndex];
-  if (!suggestion) { moveToNext(); return; }
-
-  const btnAccept = document.getElementById('btn-accept');
-  const btnSkip   = document.getElementById('btn-skip');
-  btnAccept.disabled = true;
-  btnSkip.disabled   = true;
-  btnAccept.textContent = 'Applying…';
-
-  try {
-    await clearHighlight(suggestion.original_text);
-    await applyOneChange(suggestion);
-    session.acceptedChanges.push(suggestion);
-  } catch (e) {
-    console.warn('Could not apply change:', e.message);
-    session.acceptedChanges.push(suggestion);
-  } finally {
-    btnAccept.disabled = false;
-    btnSkip.disabled   = false;
-    btnAccept.textContent = 'Accept change ✓';
-  }
-
-  moveToNext();
-}
-
-async function onSkip() {
-  const suggestion = session.clauseSuggestions[session.currentClauseIndex];
-  session.skippedChanges.push(session.triageJSON.clauses[session.currentClauseIndex]);
-  await clearHighlight(suggestion?.original_text);
-  moveToNext();
-}
-
-async function moveToNext() {
-  session.currentClauseIndex++;
-  const total = session.triageJSON.clauses.length;
-
-  if (session.currentClauseIndex < total) {
-    await loadClauseCard(session.currentClauseIndex);
-  } else {
-    showCompletionScreen();
-  }
-}
-
-// Applies a single suggestion to the Word document as a tracked change
-async function applyOneChange(change) {
-  await Word.run(async (context) => {
-    context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-    await context.sync();
-
-    // ── INSERT (missing clause) ──────────────────────────────
-    if (change.change_type === 'Insert' || change.original_text === 'MISSING') {
-      const sigSearch = context.document.body.search('IN WITNESS WHEREOF', { matchCase: false });
-      sigSearch.load('items');
-      await context.sync();
-
-      if (sigSearch.items.length > 0) {
-        sigSearch.items[0].insertParagraph(change.suggested_text, 'Before');
-        sigSearch.items[0].insertComment(`[AI REVIEWER — NEW CLAUSE | ${change.applicable_statute || ''}] ${change.issue_summary}`);
-      } else {
-        context.document.body.paragraphs.getLast()
-          .insertParagraph(change.suggested_text, 'After');
-      }
-      await context.sync();
-
-    } else {
-      // ── FIND + REPLACE / DELETE ────────────────────────────
-      const range = await findRange(context, change.original_text);
-
-      if (range) {
-        if (change.change_type === 'Delete') {
-          range.insertText('', 'Replace');
-        } else {
-          range.insertText(change.suggested_text, 'Replace');
-        }
-        range.insertComment(`[AI REVIEWER | ${change.applicable_statute || ''}] ${change.issue_summary}`);
-        await context.sync();
-      } else {
-        // Can't locate original — leave a comment so nothing is lost
-        context.document.body.paragraphs.getLast().insertComment(
-          `[AI REVIEWER — APPLY MANUALLY]\nClause: ${change.clause_name}\n${change.issue_summary}\n\nSUGGESTED:\n${change.suggested_text}`
-        );
-        await context.sync();
-      }
-    }
-
-    context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
-    await context.sync();
-  });
 }
 
 
@@ -770,32 +1233,43 @@ async function onAskAI() {
   btn.textContent = '…';
 
   try {
-    const clause = session.triageJSON.clauses[session.currentClauseIndex];
+    const idx = sessionState.currentClauseIndex;
+    const clause = sessionState.triageJSON.clauses[idx];
 
-    session.conversationHistory.push({ role: 'user', content: userMessage });
+    sessionState.conversationHistory.push({ role: 'user', content: userMessage });
 
     const messages = [
       {
         role: 'user',
         content: JSON.stringify({
-          classification: session.classificationJSON,
-          clause: clause
+          classification: sessionState.classificationJSON,
+          clause: clause,
+          draft_origin: sessionState.draftOrigin,
+          risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
+          pending_changes: Object.values(sessionState.pendingChanges),
+          section_manifest: sessionState.sectionManifest,
+          baseline_sections: sessionState.activeBaseline,
+          defined_terms: sessionState.definedTerms
         })
       },
-      ...session.conversationHistory
+      ...sessionState.conversationHistory
     ];
 
-    const responseText = await callChat(CALL_3_PROMPT, messages, 3000);
+    const responseText = await callChat(CALL_3_PROMPT, messages, 4000);
     const updated = parseJSON(responseText);
-    session.conversationHistory.push({ role: 'assistant', content: responseText });
 
-    session.clauseSuggestions[session.currentClauseIndex] = updated;
+    sessionState.conversationHistory.push({ role: 'assistant', content: responseText });
 
-    renderClauseCard(
-      clause, updated,
-      session.currentClauseIndex,
-      session.triageJSON.clauses.length
-    );
+    // Re-apply verbatim override after Ask AI update
+    const verbatimText = resolveSegmentText(clause);
+    if (verbatimText && updated.original_text !== 'MISSING' && updated.change_type !== 'Insert') {
+      updated.original_text = verbatimText;
+    }
+
+    // Reset cache entry so back-navigation shows updated suggestion
+    sessionState.suggestionCache[idx] = updated;
+
+    renderClauseCard(clause, updated, idx, sessionState.triageJSON.clauses.length);
 
     const responseEl = document.getElementById('ask-ai-response');
     responseEl.textContent = updated.user_message_addressed || updated.legal_analysis || '';
@@ -858,23 +1332,19 @@ function showConfidenceModal(clarificationRequired) {
   });
 
   document.getElementById('modal-confidence').classList.remove('hidden');
-  document.getElementById('screen-loading').classList.remove('active');
   showScreen('screen-landing');
 }
 
 function collectModalAnswers() {
   const answers = {};
-  const questions = document.querySelectorAll('.modal-question');
-  questions.forEach((qDiv, i) => {
+  document.querySelectorAll('.modal-question').forEach((qDiv, i) => {
     const radios = qDiv.querySelectorAll('input[type=radio]');
     if (radios.length > 0) {
       const checked = qDiv.querySelector('input[type=radio]:checked');
       if (checked) answers[`Q${i + 1}`] = checked.value;
     } else {
       const textarea = qDiv.querySelector('textarea');
-      if (textarea && textarea.value.trim()) {
-        answers[`Q${i + 1}`] = textarea.value.trim();
-      }
+      if (textarea && textarea.value.trim()) answers[`Q${i + 1}`] = textarea.value.trim();
     }
   });
   return answers;
@@ -882,30 +1352,110 @@ function collectModalAnswers() {
 
 
 // =============================================================
-// CLEAN AND COMPLETION SCREENS
+// CLEAN SCREEN
 // =============================================================
 function showCleanScreen() {
-  const c = session.classificationJSON;
+  const c = sessionState.classificationJSON;
   document.getElementById('clean-meta').innerHTML = `
     <strong>${c.classification.agreement_type}</strong><br>
     Client: ${c.perspective.inferred_perspective}<br>
     Statutes: ${(c.classification.applicable_statutes || []).slice(0, 3).join(', ')}
   `;
   document.getElementById('clean-note').textContent =
-    session.triageJSON.clean_agreement_note ||
+    sessionState.triageJSON.clean_agreement_note ||
     'No issues identified under Indian law for this agreement type and client position.';
   showScreen('screen-clean');
 }
 
-function showCompletionScreen() {
-  const accepted = session.acceptedChanges.length;
-  const skipped = session.skippedChanges.length;
-  document.getElementById('completion-stats').innerHTML = `
-    <div class="stat"><span>Changes applied</span><span>${accepted}</span></div>
-    <div class="stat"><span>Clauses skipped</span><span>${skipped}</span></div>
-    <div class="stat"><span>Total reviewed</span><span>${session.triageJSON.total_clauses_flagged}</span></div>
+
+// =============================================================
+// SUMMARY SCREEN
+// =============================================================
+function showSummaryScreen() {
+  const clauses = sessionState.triageJSON.clauses;
+  const map = sessionState.decisionMap;
+
+  let fullAccepted = 0, fallbackAccepted = 0, rejected = 0, pending = 0, criticalResolved = 0;
+
+  clauses.forEach((clause, idx) => {
+    const d = map[idx];
+    if (d === 'accepted') {
+      fullAccepted++;
+      if ((clause.priority || '').toUpperCase() === 'CRITICAL') criticalResolved++;
+    } else if (d === 'accepted_fallback') {
+      fallbackAccepted++;
+      if ((clause.priority || '').toUpperCase() === 'CRITICAL') criticalResolved++;
+    } else if (d === 'rejected') {
+      rejected++;
+    } else {
+      pending++;
+    }
+  });
+
+  document.getElementById('summary-split').innerHTML = `
+    <div class="stat"><span>Changes accepted (full)</span><span>${fullAccepted}</span></div>
+    <div class="stat"><span>Changes accepted (fallback)</span><span>${fallbackAccepted}</span></div>
+    <div class="stat"><span>Rejected</span><span>${rejected}</span></div>
+    <div class="stat"><span>Not reviewed</span><span>${pending}</span></div>
+    <div class="stat"><span>Critical issues resolved</span><span>${criticalResolved}</span></div>
+    <div class="stat"><span>Total flagged</span><span>${clauses.length}</span></div>
   `;
-  showScreen('screen-complete');
+
+  const tbody = document.getElementById('summary-tbody');
+  tbody.innerHTML = '';
+  clauses.forEach((clause, idx) => {
+    const d = map[idx];
+    let decisionLabel = '—';
+    let decisionClass = 'td-pending';
+    if (d === 'accepted')          { decisionLabel = 'Accepted';          decisionClass = 'td-accepted'; }
+    else if (d === 'accepted_fallback') { decisionLabel = 'Fallback';     decisionClass = 'td-fallback'; }
+    else if (d === 'rejected')     { decisionLabel = 'Rejected';          decisionClass = 'td-rejected'; }
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${clause.clause_name || clause.clause_id || `Clause ${idx + 1}`}</td>
+      <td>${clause.priority || ''}</td>
+      <td class="${decisionClass}">${decisionLabel}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  showScreen('screen-summary');
+}
+
+function downloadReport() {
+  const clauses = sessionState.triageJSON.clauses;
+  const map = sessionState.decisionMap;
+  const lines = [
+    'AI CONTRACT REVIEWER — REVIEW REPORT',
+    `Agreement: ${sessionState.classificationJSON.classification.agreement_type}`,
+    `Client perspective: ${sessionState.classificationJSON.perspective.inferred_perspective}`,
+    `Draft origin: ${sessionState.draftOrigin}`,
+    `Risk posture: ${sessionState.classificationJSON.risk_posture || 'neutral'}`,
+    '',
+    'CLAUSE DECISIONS',
+    '─'.repeat(60)
+  ];
+
+  clauses.forEach((clause, idx) => {
+    const d = map[idx] || 'not reviewed';
+    const suggestion = sessionState.suggestionCache[idx];
+    lines.push('');
+    lines.push(`${idx + 1}. ${clause.clause_name || clause.clause_id} [${clause.priority}] — ${d.toUpperCase()}`);
+    if (suggestion) {
+      lines.push(`   Issue: ${suggestion.issue_summary || ''}`);
+      if (d === 'accepted' || d === 'accepted_fallback') {
+        const appliedText = d === 'accepted_fallback' ? suggestion.fallback_text : suggestion.suggested_text;
+        lines.push(`   Applied: ${(appliedText || '').substring(0, 200)}…`);
+      }
+    }
+  });
+
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'contract-review-report.txt';
+  a.click();
 }
 
 
@@ -915,28 +1465,57 @@ function showCompletionScreen() {
 Office.onReady(info => {
   if (info.host === Office.HostType.Word) {
     document.getElementById('btn-start').addEventListener('click', () => runReview());
+
+    // Clause card decisions
     document.getElementById('btn-accept').addEventListener('click', onAccept);
-    document.getElementById('btn-skip').addEventListener('click', onSkip);
+    document.getElementById('btn-accept-fallback').addEventListener('click', onAcceptFallback);
+    document.getElementById('btn-reject').addEventListener('click', onReject);
+    document.getElementById('btn-undo').addEventListener('click', onUndoDecision);
+    document.getElementById('btn-accept-add-def').addEventListener('click', onAcceptAddDefinition);
+
+    // Navigation
+    document.getElementById('btn-prev').addEventListener('click', onPrev);
+    document.getElementById('btn-next').addEventListener('click', onNext);
+
+    // Finalise
+    document.getElementById('btn-finalise').addEventListener('click', onFinalise);
+
+    // Ask AI
     document.getElementById('btn-ask-ai').addEventListener('click', onAskAI);
     document.getElementById('ask-ai-input').addEventListener('keydown', e => {
       if (e.key === 'Enter') onAskAI();
     });
+
+    // Confidence modal
     document.getElementById('btn-modal-submit').addEventListener('click', () => {
       const answers = collectModalAnswers();
       document.getElementById('modal-confidence').classList.add('hidden');
       runReview(answers);
     });
+
+    // Clean screen
     document.getElementById('btn-clean-done').addEventListener('click', () => showScreen('screen-landing'));
+
+    // Summary screen
+    document.getElementById('btn-download-report').addEventListener('click', downloadReport);
     document.getElementById('btn-restart').addEventListener('click', () => {
-      Object.assign(session, {
+      Object.assign(sessionState, {
         classificationJSON: null,
         triageJSON: null,
-        clauseSuggestions: [],
-        conversationHistory: [],
         currentClauseIndex: 0,
-        acceptedChanges: [],
-        skippedChanges: [],
-        documentText: null
+        conversationHistory: [],
+        conversationHistoryByClause: {},
+        pendingChanges: {},
+        rejectedChanges: [],
+        suggestionCache: {},
+        decisionMap: {},
+        documentText: null,
+        clauseMap: [],
+        tableMap: [],
+        definedTerms: [],
+        draftOrigin: 'counterparty',
+        sectionManifest: [],
+        activeBaseline: [],
       });
       showScreen('screen-landing');
     });

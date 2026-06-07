@@ -15,8 +15,29 @@
     <p class="subtitle">Indian Law Edition</p>
     <p class="description">
       Identifies statutory conflicts, regulatory gaps, and material risks.
-      Applies accepted changes as Word tracked changes.
+      Accepted changes are applied as Word tracked changes.
     </p>
+
+    <div class="draft-origin-box">
+      <p class="draft-origin-label">Who prepared this draft?</p>
+      <label class="origin-option">
+        <input type="radio" name="draft-origin" value="counterparty" checked/>
+        Counterparty
+      </label>
+      <label class="origin-option">
+        <input type="radio" name="draft-origin" value="client"/>
+        Our client
+      </label>
+      <label class="origin-option">
+        <input type="radio" name="draft-origin" value="third party"/>
+        Third party
+      </label>
+      <label class="origin-option">
+        <input type="radio" name="draft-origin" value="unknown"/>
+        Unknown
+      </label>
+    </div>
+
     <button id="btn-start" class="btn-primary">Review this contract</button>
     <p class="hint">Make sure your contract is open in this document</p>
   </div>
@@ -34,7 +55,7 @@
       <h2>Quick check</h2>
       <p class="modal-desc">A few questions to improve the analysis accuracy</p>
       <div id="modal-questions"></div>
-      <button id="btn-modal-submit" class="btn-primary">Continue</button>
+      <button id="btn-modal-submit" class="btn-primary" style="max-width:100%">Continue</button>
     </div>
   </div>
 
@@ -47,7 +68,7 @@
     <button id="btn-clean-done" class="btn-secondary">Done</button>
   </div>
 
-  <!-- SCREEN: Clause Card (main working screen) -->
+  <!-- SCREEN: Clause Card -->
   <div id="screen-clause" class="screen">
 
     <div class="progress-row">
@@ -55,6 +76,7 @@
       <div class="progress-track">
         <div id="progress-fill" class="progress-fill"></div>
       </div>
+      <span id="decision-badge" class="decision-badge hidden"></span>
     </div>
 
     <div class="clause-header">
@@ -63,6 +85,19 @@
     </div>
 
     <div id="statute-tag" class="statute-tag"></div>
+
+    <!-- Dependency warning (shown when downstream_impact is set) -->
+    <div id="dependency-warning" class="warning-banner hidden">
+      <span class="warning-icon">⚠</span>
+      <span id="dependency-warning-text"></span>
+    </div>
+
+    <!-- Undefined terms warning -->
+    <div id="undefined-terms-warning" class="warning-banner warning-info hidden">
+      <span class="warning-icon">ℹ</span>
+      <span id="undefined-terms-text"></span>
+      <button id="btn-accept-add-def" class="btn-inline">Accept + Add Definition</button>
+    </div>
 
     <div class="section-label">ISSUE</div>
     <div id="issue-summary" class="text-block issue-block"></div>
@@ -96,27 +131,48 @@
     </div>
     <div id="ask-ai-response" class="ask-ai-response hidden"></div>
 
+    <!-- Primary decision buttons -->
     <div class="action-row">
-      <button id="btn-skip" class="btn-skip">Skip</button>
-      <button id="btn-accept" class="btn-accept">Accept change ✓</button>
+      <button id="btn-accept" class="btn-accept">Accept ✓</button>
+      <button id="btn-accept-fallback" class="btn-accept-fallback">Accept Fallback</button>
+      <button id="btn-reject" class="btn-reject">Reject</button>
+      <button id="btn-undo" class="btn-undo hidden">Undo</button>
     </div>
 
+    <!-- Navigation row -->
+    <div class="nav-row">
+      <button id="btn-prev" class="btn-nav" disabled>◄ Prev</button>
+      <div id="status-counts" class="status-counts"></div>
+      <button id="btn-next" class="btn-nav">Next ►</button>
+    </div>
+
+    <!-- Finalise (shown when all clauses visited) -->
+    <button id="btn-finalise" class="btn-finalise hidden">Finalise &amp; Apply Changes</button>
+
   </div>
 
-  <!-- SCREEN: Applying changes -->
-  <div id="screen-applying" class="screen">
-    <div class="spinner"></div>
-    <p class="loading-text">Applying changes to document…</p>
-    <p class="loading-sub">Writing tracked changes</p>
-  </div>
-
-  <!-- SCREEN: Complete -->
-  <div id="screen-complete" class="screen">
+  <!-- SCREEN: Summary -->
+  <div id="screen-summary" class="screen">
     <div class="result-icon success">✓</div>
     <h2>Review complete</h2>
-    <div id="completion-stats" class="completion-stats"></div>
-    <p class="hint">Open Word's <strong>Review</strong> tab → <strong>Track Changes</strong> to accept or reject each change before finalising.</p>
-    <button id="btn-restart" class="btn-secondary">Review another contract</button>
+
+    <div id="summary-split" class="summary-split"></div>
+
+    <div id="summary-table-wrap" class="summary-table-wrap">
+      <table id="summary-table" class="summary-table">
+        <thead>
+          <tr>
+            <th>Clause</th>
+            <th>Priority</th>
+            <th>Decision</th>
+          </tr>
+        </thead>
+        <tbody id="summary-tbody"></tbody>
+      </table>
+    </div>
+
+    <button id="btn-download-report" class="btn-secondary" style="margin-top:14px">Download Report</button>
+    <button id="btn-restart" class="btn-secondary" style="margin-top:8px">Review another contract</button>
   </div>
 
   <script src="https://appsforoffice.microsoft.com/lib/1.1/hosted/office.js"></script>
