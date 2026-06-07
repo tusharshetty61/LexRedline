@@ -543,6 +543,7 @@ function segmentDocument(rawText) {
   const segments = [];
   let lastIndex = 0;
   let lastHeading = 'Preamble';
+  let lastHeadingFull = 'Preamble';
   let segId = 0;
   let match;
 
@@ -551,17 +552,22 @@ function segmentDocument(rawText) {
       segments.push({
         section_id: String(segId++),
         heading: lastHeading,
+        headingFull: lastHeadingFull,
         text: rawText.slice(lastIndex, match.index).trim(),
-        charStart: lastIndex,    // position in full document text
+        charStart: lastIndex,
         charEnd: match.index
       });
     }
+    // Capture the full heading line (up to next newline) for accurate search anchoring
+    const lineEnd = rawText.indexOf('\n', match.index);
+    lastHeadingFull = (lineEnd >= 0 ? rawText.slice(match.index, lineEnd) : rawText.slice(match.index)).trim();
     lastHeading = match[0].trim();
-    lastIndex = match.index;
+    lastIndex = lineEnd >= 0 ? lineEnd + 1 : rawText.length; // body starts after heading line
   }
   segments.push({
     section_id: String(segId),
     heading: lastHeading,
+    headingFull: lastHeadingFull,
     text: rawText.slice(lastIndex).trim(),
     charStart: lastIndex,
     charEnd: rawText.length
@@ -762,12 +768,17 @@ async function findRangeByHeading(clause, ctx) {
   const seg = resolveSegment(clause);
   if (!seg || !seg.heading || seg.heading === 'Preamble') return null;
 
-  const headingResults = ctx.document.body.search(seg.heading.trim(), { matchCase: false });
+  // Use the full heading line for the search anchor so the body start position
+  // is after the ENTIRE heading text, not just the partial regex match prefix.
+  // Limit to 100 chars so body.search() stays reliable.
+  const headingSearch = (seg.headingFull || seg.heading).substring(0, 100).trim();
+
+  const headingResults = ctx.document.body.search(headingSearch, { matchCase: false });
   headingResults.load('items');
   await ctx.sync();
   if (headingResults.items.length === 0) return null;
 
-  // Body starts at the END of the heading range
+  // Body starts at the END of the full heading range
   const bodyStart = headingResults.items[0].getRange('End');
 
   const segIndex = sessionState.clauseMap.indexOf(seg);
@@ -780,7 +791,8 @@ async function findRangeByHeading(clause, ctx) {
     return bodyStart.expandTo(bodyEnd);
   }
 
-  const nextResults = ctx.document.body.search(nextSeg.heading.trim(), { matchCase: false });
+  const nextHeadingSearch = (nextSeg.headingFull || nextSeg.heading).substring(0, 100).trim();
+  const nextResults = ctx.document.body.search(nextHeadingSearch, { matchCase: false });
   nextResults.load('items');
   await ctx.sync();
 
@@ -816,9 +828,13 @@ async function navigateTo(index) {
 
   // Serve from cache if available
   if (sessionState.suggestionCache[index]) {
-    renderClauseCard(clause, sessionState.suggestionCache[index], index, total);
+    const cached = sessionState.suggestionCache[index];
+    renderClauseCard(clause, cached, index, total);
     updateNavButtons(index, total);
     showScreen('screen-clause');
+    if (cached.original_text && cached.original_text !== 'MISSING') {
+      await highlightInDocument(cached.original_text, clause.priority);
+    }
     return;
   }
 
@@ -851,18 +867,17 @@ async function navigateTo(index) {
     // Resolve original_text in priority order:
     // 1. AI-returned char indices — most precise (sub-clause level)
     // 2. Full segment text — whole section fallback
-    // Either way, text comes from sessionState.documentText, never from AI quoting.
+    // Either way: text comes from sessionState.documentText (never AI quoting),
+    // then clause numbers are stripped so body.search() works reliably.
     if (suggestion.original_text !== 'MISSING' && suggestion.change_type !== 'Insert') {
       const aiStart = suggestion.char_start;
       const aiEnd   = suggestion.char_end;
       const docText = sessionState.documentText;
       if (aiStart != null && aiEnd != null && aiEnd > aiStart
           && seg && aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50) {
-        // Indices are within the expected segment bounds — use them
-        suggestion.original_text = docText.substring(aiStart, aiEnd).trim();
+        suggestion.original_text = stripClauseNumber(docText.substring(aiStart, aiEnd));
       } else if (verbatimText) {
-        // Fall back to whole segment verbatim text
-        suggestion.original_text = verbatimText;
+        suggestion.original_text = stripClauseNumber(verbatimText);
       }
     }
 
@@ -1158,12 +1173,16 @@ async function applyAcceptedChanges(accepted) {
         continue;
       }
 
-      // 1. Try heading-based range (verbatim heading from clauseMap — most reliable)
-      let target = await findRangeByHeading(c, ctx);
+      // 1. Text search on original_text (already stripped of clause number prefix).
+      //    Finds just the content — so "8.    " prefix stays intact in the document
+      //    and the replacement slots in cleanly after it.
+      let target = await findRange(ctx, c.original_text);
 
-      // 2. Fall back to heuristic prefix search on original_text
+      // 2. Heading-based range — only if text search fails (real section headings
+      //    where the body text is too long to search). NOT suitable for numbered
+      //    paragraph clauses because the regex match is only a prefix of the line.
       if (!target) {
-        target = await findRange(ctx, c.original_text);
+        target = await findRangeByHeading(c, ctx);
       }
 
       if (target) {
@@ -1248,6 +1267,13 @@ async function clearHighlight(originalText) {
   }
 }
 
+// Strip leading clause number (e.g. "8.    " or "8.1.2  ") from a text string.
+// Word's body.search() can fail on multi-space-padded numbered paragraphs, and
+// the clause content without the number is both unique and reliably searchable.
+function stripClauseNumber(text) {
+  return (text || '').replace(/^\d+[\d.]*\.?\s+/, '').trim();
+}
+
 async function findRange(context, originalText) {
   if (!originalText || originalText.trim().length < 5) return null;
 
@@ -1261,12 +1287,26 @@ async function findRange(context, originalText) {
     return results.items.length > 0 ? results.items[0] : null;
   }
 
+  // Strategy 1 — progressive prefix on full text
   for (const len of [originalText.length, 200, 150, 100, 60, 40]) {
     if (len > originalText.length) continue;
     const hit = await trySearch(originalText.substring(0, len));
     if (hit) return hit;
   }
 
+  // Strategy 2 — strip leading clause number ("8.    " etc.) and retry.
+  // AI often quotes content without the number; segment verbatim text includes it.
+  // Word may also normalise multi-space padding differently from the raw text.
+  const stripped = stripClauseNumber(originalText);
+  if (stripped !== originalText && stripped.length > 20) {
+    for (const len of [Math.min(stripped.length, 200), 150, 100, 60, 40]) {
+      if (len > stripped.length) continue;
+      const hit = await trySearch(stripped.substring(0, len));
+      if (hit) return hit;
+    }
+  }
+
+  // Strategy 3 — individual sentences
   const sentences = originalText
     .split(/(?<=[.;])\s+/)
     .map(s => s.trim())
@@ -1329,9 +1369,9 @@ async function onAskAI() {
       const docText = sessionState.documentText;
       if (aiStart != null && aiEnd != null && aiEnd > aiStart
           && seg && aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50) {
-        updated.original_text = docText.substring(aiStart, aiEnd).trim();
+        updated.original_text = stripClauseNumber(docText.substring(aiStart, aiEnd));
       } else if (seg && seg.text) {
-        updated.original_text = seg.text;
+        updated.original_text = stripClauseNumber(seg.text);
       }
     }
 
