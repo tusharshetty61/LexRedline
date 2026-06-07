@@ -351,7 +351,7 @@ const CALL_3_PROMPT = `You are a senior contract lawyer and negotiation advisor 
 
 You will receive:
 1. A classification JSON object from Call 1 (including risk_posture and draft_origin)
-2. A single clause object from the triage JSON — including clause_text (verbatim from document), char_start and char_end (character positions of this segment in the full document text)
+2. A single clause object from the triage JSON — including clause_text (verbatim from document)
 3. Optionally: conversation_history if the lawyer has asked follow-up questions
 4. pending_changes: a list of changes already accepted in this review session — check if any affect the risk profile of this clause
 5. section_manifest: the actual section headings from the document (use verbatim headings for insert_anchor)
@@ -401,11 +401,7 @@ issue_summary: Two to three sentences. State the legal problem, Indian law basis
 
 legal_analysis: Detailed legal reasoning. Cite statutes by section number. Reference leading Indian cases where relevant (e.g. ONGC v Saw Pipes for S.74; Nirma Ltd v Lurgi for indemnity scope; Centrotrade for seat vs venue of arbitration).
 
-original_text: Verbatim text from the agreement exactly as it appears. Used for string search in Word. Do not paraphrase or truncate. For missing clauses: set to "MISSING".
-
-char_start: For Replace or Delete only — the character index in the full document text where the specific text to be changed begins. This must be within the clause's char_start..char_end range provided. Use this to pinpoint a sub-clause or sentence rather than the whole section if only part of the section needs changing. Omit (set to null) for Insert changes.
-
-char_end: For Replace or Delete only — the character index where the specific text to be changed ends. Omit (set to null) for Insert changes.
+original_text: Verbatim text from the agreement exactly as it appears — copied directly from clause_text. Used for string search in Word to locate the text for replacement. If only part of the clause needs changing (a sub-sentence), quote only that specific part verbatim. Do not paraphrase, summarise, or truncate mid-sentence. For missing clauses: set to "MISSING".
 
 suggested_text: Complete replacement clause, ready to insert. For missing clauses: complete draft clause. For deletions: set to "DELETE".
 
@@ -440,8 +436,6 @@ OUTPUT
   "fallback_text": "",
   "negotiation_note": "",
   "change_type": "Replace | Insert | Delete",
-  "char_start": null,
-  "char_end": null,
   "insert_anchor": null,
   "insert_mode": "after_section",
   "insert_position_note": "",
@@ -892,7 +886,7 @@ async function navigateTo(index) {
     const call3Payload = JSON.stringify({
       classification: sessionState.classificationJSON,
       clause: seg
-        ? { ...clause, clause_text: seg.text, char_start: seg.charStart, char_end: seg.charEnd }
+        ? { ...clause, clause_text: seg.text }   // use verbatim segment text; no char indices
         : clause,
       draft_origin: sessionState.draftOrigin,
       risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
@@ -912,18 +906,12 @@ async function navigateTo(index) {
     // 2. Full segment text — whole section fallback
     // Either way: text comes from sessionState.documentText (never AI quoting),
     // then clause numbers are stripped so body.search() works reliably.
-    if (suggestion.original_text !== 'MISSING' && suggestion.change_type !== 'Insert') {
-      const aiStart = suggestion.char_start;
-      const aiEnd   = suggestion.char_end;
-      const docText = sessionState.documentText;
-      const withinDoc = aiStart != null && aiEnd != null && aiEnd > aiStart
-                        && aiStart >= 0 && aiEnd <= docText.length + 50;
-      const withinSeg = !seg || (aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50);
-      if (withinDoc && withinSeg) {
-        suggestion.original_text = stripClauseNumber(docText.substring(aiStart, aiEnd));
-      } else if (verbatimText) {
-        suggestion.original_text = stripClauseNumber(verbatimText);
-      }
+    // Strip clause number prefix from whatever original_text Call 3 returned.
+    // Call 3 already has the verbatim clause_text and quotes it accurately —
+    // we don't override it. We only strip "8.    " style prefixes that break Word search.
+    if (suggestion.original_text && suggestion.original_text !== 'MISSING'
+        && suggestion.change_type !== 'Insert') {
+      suggestion.original_text = stripClauseNumber(suggestion.original_text);
     }
 
     sessionState.suggestionCache[index] = suggestion;
@@ -1284,7 +1272,13 @@ async function highlightInDocument(originalText, priority) {
   if (!originalText || originalText === 'MISSING') return;
   try {
     await Word.run(async (context) => {
-      const range = await findRange(context, originalText);
+      // Use a short, unique excerpt for the search — long strings fail in Word's body.search.
+      // Take the first complete sentence (up to 150 chars), or first 150 chars if no sentence end.
+      const sentenceEnd = originalText.search(/[.;]\s/);
+      const searchText = sentenceEnd > 20 && sentenceEnd < 150
+        ? originalText.substring(0, sentenceEnd + 1).trim()
+        : originalText.substring(0, 150).trim();
+      const range = await findRange(context, searchText);
       if (range) {
         const p = (priority || 'HIGH').toUpperCase();
         range.font.highlightColor = PRIORITY_HIGHLIGHT[p] || 'Yellow';
@@ -1408,18 +1402,9 @@ async function onAskAI() {
 
     // Re-apply index/verbatim override after Ask AI update
     const seg = resolveSegment(clause);
-    if (updated.original_text !== 'MISSING' && updated.change_type !== 'Insert') {
-      const aiStart = updated.char_start;
-      const aiEnd   = updated.char_end;
-      const docText = sessionState.documentText;
-      const withinDoc = aiStart != null && aiEnd != null && aiEnd > aiStart
-                        && aiStart >= 0 && aiEnd <= docText.length + 50;
-      const withinSeg = !seg || (aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50);
-      if (withinDoc && withinSeg) {
-        updated.original_text = stripClauseNumber(docText.substring(aiStart, aiEnd));
-      } else if (seg && seg.text) {
-        updated.original_text = stripClauseNumber(seg.text);
-      }
+    if (updated.original_text && updated.original_text !== 'MISSING'
+        && updated.change_type !== 'Insert') {
+      updated.original_text = stripClauseNumber(updated.original_text);
     }
 
     // Reset cache entry so back-navigation shows updated suggestion
