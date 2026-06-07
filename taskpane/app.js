@@ -259,7 +259,7 @@ RISK POSTURE INSTRUCTIONS:
 - risk_posture = "aggressive" (client draft): flag ONLY statutory conflicts, regulatory non-compliance, and missing mandatory clauses. Do NOT flag clauses that merely favour the client.
 - risk_posture = "neutral": balanced analysis — flag all meaningful risks.
 
-MISSING CLAUSE INSTRUCTION: Only flag a section as missing if it is present in the active_baseline AND absent from the section_manifest. Do NOT flag sections that are not in the active_baseline for this agreement type.
+MISSING CLAUSE INSTRUCTION: Only flag a section as missing if it is present in the active_baseline AND its legal substance is genuinely absent from the document. Do NOT conclude a clause is missing merely because its name does not appear as a heading in section_manifest — many Indian contracts use numbered paragraphs without named section headings (e.g. "8. The Purchaser shall indemnify..." rather than a dedicated "Indemnification" heading). Always look at the full content of the sections array to determine whether the clause substance is actually covered. Do NOT flag sections that are not in the active_baseline for this agreement type.
 
 Return only valid JSON. No preamble or explanation outside the JSON object. Temperature is set to 0. Be deterministic.
 
@@ -539,7 +539,10 @@ function extractDefinedTerms(rawText) {
 }
 
 function segmentDocument(rawText) {
-  const headingRegex = /^(\d+\.(?:\d+\.?)*\s+[A-Z][A-Za-z]|[A-Z]{4,}[\s\w]*$)/gm;
+  // Only match SHORT numbered headings (title-style, ends at line-end within ~6 words).
+  // Numbered paragraphs like "8.    The Purchaser shall indemnify..." are NOT headings —
+  // they fail the $ anchor because the long paragraph text continues past 6 words.
+  const headingRegex = /^(\d+\.(?:\d+\.?)*\s+[A-Z]\w*(?:\s+\S+){0,5}\s*$|[A-Z]{4,}[\s\w]*$)/gm;
   const segments = [];
   let lastIndex = 0;
   let lastHeading = 'Preamble';
