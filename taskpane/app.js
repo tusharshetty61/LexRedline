@@ -1097,6 +1097,9 @@ function onReject() {
   const suggestion = sessionState.suggestionCache[idx];
   if (suggestion) {
     sessionState.rejectedChanges.push(sessionState.triageJSON.clauses[idx]);
+    if (suggestion.original_text && suggestion.original_text !== 'MISSING') {
+      clearHighlight(suggestion.original_text);
+    }
   }
   delete sessionState.pendingChanges[idx];
   sessionState.decisionMap[idx] = 'rejected';
@@ -1107,10 +1110,18 @@ function onReject() {
 
 function onUndoDecision() {
   const idx = sessionState.currentClauseIndex;
+  const suggestion = sessionState.suggestionCache[idx];
+  const prevDecision = sessionState.decisionMap[idx];
   delete sessionState.pendingChanges[idx];
   sessionState.decisionMap[idx] = null;
   updateDecisionBadge(idx);
   updateStatusCounts();
+  // If undoing a rejection, re-highlight the clause
+  if (prevDecision === 'rejected' && suggestion && suggestion.original_text
+      && suggestion.original_text !== 'MISSING') {
+    const clause = sessionState.triageJSON.clauses[idx];
+    highlightInDocument(suggestion.original_text, clause.priority);
+  }
 }
 
 function onAcceptAddDefinition() {
