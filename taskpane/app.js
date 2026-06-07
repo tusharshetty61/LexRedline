@@ -876,8 +876,10 @@ async function navigateTo(index) {
       const aiStart = suggestion.char_start;
       const aiEnd   = suggestion.char_end;
       const docText = sessionState.documentText;
-      if (aiStart != null && aiEnd != null && aiEnd > aiStart
-          && seg && aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50) {
+      const withinDoc = aiStart != null && aiEnd != null && aiEnd > aiStart
+                        && aiStart >= 0 && aiEnd <= docText.length + 50;
+      const withinSeg = !seg || (aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50);
+      if (withinDoc && withinSeg) {
         suggestion.original_text = stripClauseNumber(docText.substring(aiStart, aiEnd));
       } else if (verbatimText) {
         suggestion.original_text = stripClauseNumber(verbatimText);
@@ -1370,8 +1372,10 @@ async function onAskAI() {
       const aiStart = updated.char_start;
       const aiEnd   = updated.char_end;
       const docText = sessionState.documentText;
-      if (aiStart != null && aiEnd != null && aiEnd > aiStart
-          && seg && aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50) {
+      const withinDoc = aiStart != null && aiEnd != null && aiEnd > aiStart
+                        && aiStart >= 0 && aiEnd <= docText.length + 50;
+      const withinSeg = !seg || (aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50);
+      if (withinDoc && withinSeg) {
         updated.original_text = stripClauseNumber(docText.substring(aiStart, aiEnd));
       } else if (seg && seg.text) {
         updated.original_text = stripClauseNumber(seg.text);
