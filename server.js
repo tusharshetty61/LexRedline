@@ -37,11 +37,11 @@ app.post('/api/analyze', async (req, res) => {
   const { systemPrompt, userContent, maxTokens } = req.body;
   try {
     const client = getClient();
-    console.log(`  → Claude call /api/analyze (max_tokens: ${maxTokens || 4000})`);
+    console.log(`  → Claude call /api/analyze (max_tokens: ${maxTokens || 8192})`);
     const t = Date.now();
     const response = await client.messages.create({
       model:      MODEL(),
-      max_tokens: maxTokens || 4000,
+      max_tokens: maxTokens || 8192,
       temperature: 0,
       system:     systemPrompt,
       messages:   [{ role: 'user', content: userContent }]
@@ -60,11 +60,11 @@ app.post('/api/chat', async (req, res) => {
   const { systemPrompt, messages, maxTokens } = req.body;
   try {
     const client = getClient();
-    console.log(`  → Claude call /api/chat (${messages.length} messages, max_tokens: ${maxTokens || 4000})`);
+    console.log(`  → Claude call /api/chat (${messages.length} messages, max_tokens: ${maxTokens || 8192})`);
     const t = Date.now();
     const response = await client.messages.create({
       model:      MODEL(),
-      max_tokens: maxTokens || 4000,
+      max_tokens: maxTokens || 8192,
       temperature: 0,
       system:     systemPrompt,
       messages:   messages

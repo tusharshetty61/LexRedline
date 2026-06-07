@@ -701,7 +701,7 @@ async function runReview(clarificationAnswers = null) {
       userContent = `DRAFT ORIGIN: ${sessionState.draftOrigin}\n\nCLARIFICATION ANSWERS FROM LAWYER:\n${JSON.stringify(clarificationAnswers, null, 2)}\n\nAGREEMENT TEXT:\n${sessionState.documentText}`;
     }
 
-    const call1Text = await callAPI(CALL_1_PROMPT, userContent, 4000);
+    const call1Text = await callAPI(CALL_1_PROMPT, userContent);
     sessionState.classificationJSON = parseJSON(call1Text);
 
     if (sessionState.classificationJSON.confidence && sessionState.classificationJSON.confidence.status === 'LOW') {
@@ -733,7 +733,7 @@ async function runReview(clarificationAnswers = null) {
       instruction: 'Evaluate ALL sections in the sections array. Your output must include sections_reviewed listing every section_id you examined.'
     });
 
-    const call2Text = await callAPI(CALL_2_PROMPT, call2Payload, 6000);
+    const call2Text = await callAPI(CALL_2_PROMPT, call2Payload);
     sessionState.triageJSON = parseJSON(call2Text);
 
     if (sessionState.triageJSON.no_issues_found) {
