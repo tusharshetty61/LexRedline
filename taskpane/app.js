@@ -1107,7 +1107,7 @@ function updateNavButtons(index, total) {
 
 
 // =============================================================
-// DECISIONS — deferred until Finalise
+// DECISIONS — apply tracked change immediately on Accept
 // =============================================================
 function onAccept() {
   const idx = sessionState.currentClauseIndex;
@@ -1118,6 +1118,10 @@ function onAccept() {
   sessionState.decisionMap[idx] = 'accepted';
   updateDecisionBadge(idx);
   updateStatusCounts();
+
+  // Apply to document immediately as a tracked change (fire and forget)
+  applyAcceptedChanges([{ ...suggestion, accepted_as: 'full' }]);
+
   onNext();
 }
 
@@ -1174,16 +1178,15 @@ function onAcceptAddDefinition() {
   const suggestion = sessionState.suggestionCache[idx];
   if (!suggestion) return;
 
-  // Queue the main change
-  sessionState.pendingChanges[idx] = { ...suggestion, accepted_as: 'full' };
+  const mainChange = { ...suggestion, accepted_as: 'full' };
+  sessionState.pendingChanges[idx] = mainChange;
   sessionState.decisionMap[idx] = 'accepted';
 
-  // Queue definition insertions for each undefined term
+  // Build definition insertions for each undefined term
   const termWarn = document.getElementById('undefined-terms-warning');
   const undefinedTerms = termWarn._undefinedTerms || [];
-  undefinedTerms.forEach((u, i) => {
-    const defIdx = `def_${idx}_${i}`;
-    sessionState.pendingChanges[defIdx] = {
+  const defChanges = undefinedTerms.map((u, i) => {
+    const defChange = {
       clause_name: `Definition: ${u.term}`,
       change_type: 'Insert',
       original_text: 'MISSING',
@@ -1194,7 +1197,12 @@ function onAcceptAddDefinition() {
       issue_summary: `Adding definition for term "${u.term}" used in suggested redline.`,
       accepted_as: 'full'
     };
+    sessionState.pendingChanges[`def_${idx}_${i}`] = defChange;
+    return defChange;
   });
+
+  // Apply all immediately as tracked changes
+  applyAcceptedChanges([mainChange, ...defChanges]);
 
   updateDecisionBadge(idx);
   updateStatusCounts();
@@ -1206,22 +1214,6 @@ function onAcceptAddDefinition() {
 // FINALISE — batch apply
 // =============================================================
 async function onFinalise() {
-  const accepted = Object.values(sessionState.pendingChanges);
-
-  if (accepted.length === 0) {
-    showSummaryScreen();
-    return;
-  }
-
-  setLoading('Applying changes to document…', 'Writing tracked changes');
-
-  try {
-    await applyAcceptedChanges(accepted);
-  } catch (err) {
-    console.error('Apply error:', err);
-    showError('Error applying some changes: ' + err.message + '\nPartial changes may have been applied. Check the document.');
-  }
-
   showSummaryScreen();
 }
 
@@ -1661,8 +1653,7 @@ Office.onReady(info => {
 
     // Clause card decisions
     document.getElementById('btn-accept').addEventListener('click', onAccept);
-    document.getElementById('btn-accept-fallback').addEventListener('click', onAcceptFallback);
-    document.getElementById('btn-reject').addEventListener('click', onReject);
+document.getElementById('btn-reject').addEventListener('click', onReject);
     document.getElementById('btn-undo').addEventListener('click', onUndoDecision);
     document.getElementById('btn-accept-add-def').addEventListener('click', onAcceptAddDefinition);
 
