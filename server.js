@@ -31,16 +31,19 @@ function validateEnv() {
   }
 }
 
-const MODEL = () => process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+// Fast model (Haiku) for triage/classification; quality model (Sonnet) for suggestions
+const FAST_MODEL    = () => process.env.CLAUDE_FAST_MODEL || 'claude-haiku-4-5-20251001';
+const QUALITY_MODEL = () => process.env.CLAUDE_MODEL      || 'claude-sonnet-4-6';
 
 app.post('/api/analyze', async (req, res) => {
   const { systemPrompt, userContent, maxTokens } = req.body;
   try {
     const client = getClient();
-    console.log(`  → Claude call /api/analyze (max_tokens: ${maxTokens || 8192})`);
+    const model  = FAST_MODEL();
+    console.log(`  → /api/analyze [${model}] (max_tokens: ${maxTokens || 8192})`);
     const t = Date.now();
     const response = await client.messages.create({
-      model:      MODEL(),
+      model,
       max_tokens: maxTokens || 8192,
       temperature: 0,
       system:     systemPrompt,
@@ -60,10 +63,11 @@ app.post('/api/chat', async (req, res) => {
   const { systemPrompt, messages, maxTokens } = req.body;
   try {
     const client = getClient();
-    console.log(`  → Claude call /api/chat (${messages.length} messages, max_tokens: ${maxTokens || 8192})`);
+    const model  = QUALITY_MODEL();
+    console.log(`  → /api/chat [${model}] (${messages.length} msgs, max_tokens: ${maxTokens || 8192})`);
     const t = Date.now();
     const response = await client.messages.create({
-      model:      MODEL(),
+      model,
       max_tokens: maxTokens || 8192,
       temperature: 0,
       system:     systemPrompt,
@@ -80,7 +84,7 @@ app.post('/api/chat', async (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', model: MODEL() });
+  res.json({ status: 'ok', fast: FAST_MODEL(), quality: QUALITY_MODEL() });
 });
 
 validateEnv();
@@ -88,6 +92,7 @@ validateEnv();
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`\n✓ Contract Reviewer server running on http://localhost:${PORT}`);
-  console.log(`  Model : ${MODEL()}`);
+  console.log(`  Fast (triage)   : ${FAST_MODEL()}`);
+  console.log(`  Quality (suggest): ${QUALITY_MODEL()}`);
   console.log(`\n  Health: http://localhost:${PORT}/health\n`);
 });
