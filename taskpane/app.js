@@ -338,7 +338,7 @@ const CALL_3_PROMPT = `You are a senior contract lawyer and negotiation advisor 
 
 You will receive:
 1. A classification JSON object from Call 1 (including risk_posture and draft_origin)
-2. A single clause object from the triage JSON
+2. A single clause object from the triage JSON — including clause_text (verbatim from document), char_start and char_end (character positions of this segment in the full document text)
 3. Optionally: conversation_history if the lawyer has asked follow-up questions
 4. pending_changes: a list of changes already accepted in this review session — check if any affect the risk profile of this clause
 5. section_manifest: the actual section headings from the document (use verbatim headings for insert_anchor)
@@ -390,6 +390,10 @@ legal_analysis: Detailed legal reasoning. Cite statutes by section number. Refer
 
 original_text: Verbatim text from the agreement exactly as it appears. Used for string search in Word. Do not paraphrase or truncate. For missing clauses: set to "MISSING".
 
+char_start: For Replace or Delete only — the character index in the full document text where the specific text to be changed begins. This must be within the clause's char_start..char_end range provided. Use this to pinpoint a sub-clause or sentence rather than the whole section if only part of the section needs changing. Omit (set to null) for Insert changes.
+
+char_end: For Replace or Delete only — the character index where the specific text to be changed ends. Omit (set to null) for Insert changes.
+
 suggested_text: Complete replacement clause, ready to insert. For missing clauses: complete draft clause. For deletions: set to "DELETE".
 
 fallback_text: A middle-ground version the client could accept if the counterparty resists. Must still be legally sound. If no meaningful fallback exists, state why.
@@ -423,6 +427,8 @@ OUTPUT
   "fallback_text": "",
   "negotiation_note": "",
   "change_type": "Replace | Insert | Delete",
+  "char_start": null,
+  "char_end": null,
   "insert_anchor": null,
   "insert_mode": "after_section",
   "insert_position_note": "",
@@ -545,7 +551,9 @@ function segmentDocument(rawText) {
       segments.push({
         section_id: String(segId++),
         heading: lastHeading,
-        text: rawText.slice(lastIndex, match.index).trim()
+        text: rawText.slice(lastIndex, match.index).trim(),
+        charStart: lastIndex,    // position in full document text
+        charEnd: match.index
       });
     }
     lastHeading = match[0].trim();
@@ -554,7 +562,9 @@ function segmentDocument(rawText) {
   segments.push({
     section_id: String(segId),
     heading: lastHeading,
-    text: rawText.slice(lastIndex).trim()
+    text: rawText.slice(lastIndex).trim(),
+    charStart: lastIndex,
+    charEnd: rawText.length
   });
   return segments;
 }
@@ -712,7 +722,7 @@ async function runReview(clarificationAnswers = null) {
 // =============================================================
 // SEGMENT LOOKUP — verbatim text from clauseMap for reliable searching
 // =============================================================
-function resolveSegmentText(clause) {
+function resolveSegment(clause) {
   const map = sessionState.clauseMap;
   if (!map || map.length === 0) return null;
 
@@ -721,22 +731,67 @@ function resolveSegmentText(clause) {
 
   // 1. Match by clause_id prefix in heading (e.g. "14.2" → "14.2 Termination")
   if (id) {
-    const byId = map.find(seg => {
-      const h = seg.heading.toLowerCase();
+    const seg = map.find(s => {
+      const h = s.heading.toLowerCase();
       return h.startsWith(id + ' ') || h.startsWith(id + '.') || h === id;
     });
-    if (byId && byId.text && byId.text.length > 10) return byId.text;
+    if (seg && seg.text && seg.text.length > 10) return seg;
   }
 
   // 2. Match by clause_name substring in heading
   if (name) {
-    const byName = map.find(seg =>
-      seg.heading.toLowerCase().includes(name)
-    );
-    if (byName && byName.text && byName.text.length > 10) return byName.text;
+    const seg = map.find(s => s.heading.toLowerCase().includes(name));
+    if (seg && seg.text && seg.text.length > 10) return seg;
   }
 
   return null;
+}
+
+// Keep backward-compat alias used in navigateTo / onAskAI
+function resolveSegmentText(clause) {
+  const seg = resolveSegment(clause);
+  return seg ? seg.text : null;
+}
+
+// Find the Word range for a clause body by searching for its heading, then
+// selecting from END of heading to START of next heading.
+// The heading is preserved; only the body text is in the returned range.
+// Headings are short, verbatim, and unique — far more reliable than
+// searching for long body text.
+async function findRangeByHeading(clause, ctx) {
+  const seg = resolveSegment(clause);
+  if (!seg || !seg.heading || seg.heading === 'Preamble') return null;
+
+  const headingResults = ctx.document.body.search(seg.heading.trim(), { matchCase: false });
+  headingResults.load('items');
+  await ctx.sync();
+  if (headingResults.items.length === 0) return null;
+
+  // Body starts at the END of the heading range
+  const bodyStart = headingResults.items[0].getRange('End');
+
+  const segIndex = sessionState.clauseMap.indexOf(seg);
+  const nextSeg = sessionState.clauseMap
+    .slice(segIndex + 1)
+    .find(s => s.heading && s.heading !== 'Preamble' && !s.source);
+
+  if (!nextSeg) {
+    const bodyEnd = ctx.document.body.getRange('End');
+    return bodyStart.expandTo(bodyEnd);
+  }
+
+  const nextResults = ctx.document.body.search(nextSeg.heading.trim(), { matchCase: false });
+  nextResults.load('items');
+  await ctx.sync();
+
+  if (nextResults.items.length === 0) {
+    const bodyEnd = ctx.document.body.getRange('End');
+    return bodyStart.expandTo(bodyEnd);
+  }
+
+  // Body ends at the START of the next heading
+  const nextHeadingStart = nextResults.items[0].getRange('Start');
+  return bodyStart.expandTo(nextHeadingStart);
 }
 
 
@@ -771,13 +826,14 @@ async function navigateTo(index) {
   showCardLoadingState(clause, index, total);
 
   try {
-    // Look up verbatim segment text before sending to model
-    const verbatimText = resolveSegmentText(clause);
+    // Look up verbatim segment (heading + text + char positions) before sending to model
+    const seg = resolveSegment(clause);
+    const verbatimText = seg ? seg.text : null;
 
     const call3Payload = JSON.stringify({
       classification: sessionState.classificationJSON,
-      clause: verbatimText
-        ? { ...clause, clause_text: verbatimText }  // give model the exact text
+      clause: seg
+        ? { ...clause, clause_text: seg.text, char_start: seg.charStart, char_end: seg.charEnd }
         : clause,
       draft_origin: sessionState.draftOrigin,
       risk_posture: sessionState.classificationJSON.risk_posture || 'neutral',
@@ -792,10 +848,22 @@ async function navigateTo(index) {
     const responseText = await callChat(CALL_3_PROMPT, messages, 4000);
     const suggestion = parseJSON(responseText);
 
-    // Override original_text with verbatim segment text so body.search() is guaranteed
-    // to find it — AI quotes are unreliable (casing, whitespace, truncation).
-    if (verbatimText && suggestion.original_text !== 'MISSING' && suggestion.change_type !== 'Insert') {
-      suggestion.original_text = verbatimText;
+    // Resolve original_text in priority order:
+    // 1. AI-returned char indices — most precise (sub-clause level)
+    // 2. Full segment text — whole section fallback
+    // Either way, text comes from sessionState.documentText, never from AI quoting.
+    if (suggestion.original_text !== 'MISSING' && suggestion.change_type !== 'Insert') {
+      const aiStart = suggestion.char_start;
+      const aiEnd   = suggestion.char_end;
+      const docText = sessionState.documentText;
+      if (aiStart != null && aiEnd != null && aiEnd > aiStart
+          && seg && aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50) {
+        // Indices are within the expected segment bounds — use them
+        suggestion.original_text = docText.substring(aiStart, aiEnd).trim();
+      } else if (verbatimText) {
+        // Fall back to whole segment verbatim text
+        suggestion.original_text = verbatimText;
+      }
     }
 
     sessionState.suggestionCache[index] = suggestion;
@@ -1069,34 +1137,17 @@ async function onFinalise() {
 async function applyAcceptedChanges(accepted) {
   await Word.run(async (ctx) => {
     ctx.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-
-    // Queue ALL searches — no sync yet
-    const searchResults = accepted.map(change => {
-      if (change.change_type === 'Insert' || change.original_text === 'MISSING') {
-        const anchor = change.insert_anchor || 'IN WITNESS WHEREOF';
-        return ctx.document.body.search(anchor, { matchCase: false });
-      }
-      return ctx.document.body.search(change.original_text || '', {
-        matchCase: false, matchWholeWord: false
-      });
-    });
-    searchResults.forEach(r => r.load('items'));
-
-    // ONE sync — snapshot all positions
     await ctx.sync();
 
     // Apply order: Deletes → Replaces → Inserts
     const ordered = [
-      ...accepted.map((c, i) => ({ c, i })).filter(x => x.c.change_type === 'Delete'),
-      ...accepted.map((c, i) => ({ c, i })).filter(x => x.c.change_type === 'Replace' || (!x.c.change_type && x.c.original_text !== 'MISSING')),
-      ...accepted.map((c, i) => ({ c, i })).filter(x => x.c.change_type === 'Insert' || x.c.original_text === 'MISSING'),
+      ...accepted.filter(c => c.change_type === 'Delete'),
+      ...accepted.filter(c => c.change_type === 'Replace' || (!c.change_type && c.original_text !== 'MISSING')),
+      ...accepted.filter(c => c.change_type === 'Insert' || c.original_text === 'MISSING'),
     ];
 
-    for (const { c, i } of ordered) {
-      const items = searchResults[i] ? searchResults[i].items : [];
-
+    for (const c of ordered) {
       if (c.change_type === 'Insert' || c.original_text === 'MISSING') {
-        // Use cascade for inserts
         const target = await resolveInsertionAnchor(c, ctx);
         if (target) {
           target.insertParagraph(c.suggested_text, Word.InsertLocation.before);
@@ -1104,8 +1155,18 @@ async function applyAcceptedChanges(accepted) {
             `[AI REVIEWER — NEW CLAUSE | ${c.applicable_statute || ''}] ${c.insert_position_note || c.issue_summary}`
           );
         }
-      } else if (items.length > 0) {
-        const target = items[0];
+        continue;
+      }
+
+      // 1. Try heading-based range (verbatim heading from clauseMap — most reliable)
+      let target = await findRangeByHeading(c, ctx);
+
+      // 2. Fall back to heuristic prefix search on original_text
+      if (!target) {
+        target = await findRange(ctx, c.original_text);
+      }
+
+      if (target) {
         if (c.change_type === 'Delete') {
           target.insertText('', Word.InsertLocation.replace);
         } else {
@@ -1113,7 +1174,7 @@ async function applyAcceptedChanges(accepted) {
         }
         target.insertComment(`[AI REVIEWER | ${c.applicable_statute || ''}] ${c.issue_summary}`);
       } else {
-        // Can't locate — leave a comment
+        // Can't locate — leave a comment so nothing is silently lost
         ctx.document.body.paragraphs.getLast().insertComment(
           `[AI REVIEWER — APPLY MANUALLY]\nClause: ${c.clause_name}\n${c.issue_summary}\n\nSUGGESTED:\n${c.suggested_text}`
         );
@@ -1260,10 +1321,18 @@ async function onAskAI() {
 
     sessionState.conversationHistory.push({ role: 'assistant', content: responseText });
 
-    // Re-apply verbatim override after Ask AI update
-    const verbatimText = resolveSegmentText(clause);
-    if (verbatimText && updated.original_text !== 'MISSING' && updated.change_type !== 'Insert') {
-      updated.original_text = verbatimText;
+    // Re-apply index/verbatim override after Ask AI update
+    const seg = resolveSegment(clause);
+    if (updated.original_text !== 'MISSING' && updated.change_type !== 'Insert') {
+      const aiStart = updated.char_start;
+      const aiEnd   = updated.char_end;
+      const docText = sessionState.documentText;
+      if (aiStart != null && aiEnd != null && aiEnd > aiStart
+          && seg && aiStart >= seg.charStart && aiEnd <= seg.charEnd + 50) {
+        updated.original_text = docText.substring(aiStart, aiEnd).trim();
+      } else if (seg && seg.text) {
+        updated.original_text = seg.text;
+      }
     }
 
     // Reset cache entry so back-navigation shows updated suggestion
