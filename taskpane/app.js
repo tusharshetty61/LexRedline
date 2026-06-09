@@ -1,4 +1,4 @@
-window.onerror = (msg, src, line) => {
+﻿window.onerror = (msg, src, line) => {
   document.body.innerHTML = `<div style="padding:20px;color:red;font-family:monospace">
     <b>Script error</b><br>${msg}<br>${src}:${line}
   </div>`;
@@ -1353,15 +1353,15 @@ function stripClauseNumber(text) {
 }
 
 // Normalize characters that differ between what Word stores and what GPT-4.1
-// returns in JSON: non-breaking spaces, narrow spaces, smart quotes, em-dashes.
-// body.search() treats U+00A0 and U+0020 as different — this collapses them.
+// returns in JSON. Uses \u escapes to avoid invisible Unicode in source.
 function normalizeSearchText(text) {
   return text
-    .replace(/[   ⁠]/g, ' ') // non-breaking / narrow spaces → space
-    .replace(/[‘’`´]/g, "'")  // curly single quotes → straight
-    .replace(/[“”]/g, '"')              // curly double quotes → straight
-    .replace(/–|—/g, '-')               // en/em dash → hyphen
-    .replace(/\s+/g, ' ')                         // collapse multiple spaces
+    .replace(/[​‌‍﻿]/g, '')        // strip zero-width / BOM chars
+    .replace(/[   ⁠­]/g, ' ') // non-breaking / narrow / soft-hyphen → space
+    .replace(/[‘’`´]/g, "'")             // curly single quotes → straight
+    .replace(/[“”]/g, '"')                    // curly double quotes → straight
+    .replace(/[–—]/g, '-')                    // en/em dash → hyphen
+    .replace(/\s+/g, ' ')                               // collapse all remaining whitespace
     .trim();
 }
 
@@ -1373,57 +1373,109 @@ async function findRange(context, originalText) {
     const normalized = normalizeSearchText(candidate);
     if (normalized.length < 10) return null;
     const results = context.document.body.search(normalized, {
-      matchCase: false, matchWholeWord: false
+      matchCase: false, matchWholeWord: false, ignoreSpace: true, ignorePunct: true
     });
     results.load('items');
     await context.sync();
     return results.items.length > 0 ? results.items[0] : null;
   }
 
-  // Strategy 1 — progressive prefix on full text
-  for (const len of [originalText.length, 200, 150, 100, 60, 40]) {
-    if (len > originalText.length) continue;
-    const hit = await trySearch(originalText.substring(0, len));
-    if (hit) return hit;
-  }
+  // Split on paragraph/line breaks to detect multi-paragraph original_text.
+  // body.search() cannot cross paragraph marks, so multi-para text needs
+  // a different strategy from the start.
+  const chunks = originalText.split(/\r\n|\r|\n/).map(s => s.trim()).filter(s => s.length > 5);
+  const isMultiPara = chunks.length > 1;
 
-  // Strategy 2 — strip leading clause number ("8.    " etc.) and retry.
-  const stripped = stripClauseNumber(originalText);
-  if (stripped !== originalText && stripped.length > 20) {
-    for (const len of [Math.min(stripped.length, 200), 150, 100, 60, 40]) {
-      if (len > stripped.length) continue;
-      const hit = await trySearch(stripped.substring(0, len));
+  if (!isMultiPara) {
+    // Strategy 1 — progressive prefix on full text
+    for (const len of [originalText.length, 200, 150, 100, 60, 40]) {
+      if (len > originalText.length) continue;
+      const hit = await trySearch(originalText.substring(0, len));
+      if (hit) return hit;
+    }
+
+    // Strategy 2 — strip leading clause number ("8.    " etc.) and retry.
+    const stripped = stripClauseNumber(originalText);
+    if (stripped !== originalText && stripped.length > 20) {
+      for (const len of [Math.min(stripped.length, 200), 150, 100, 60, 40]) {
+        if (len > stripped.length) continue;
+        const hit = await trySearch(stripped.substring(0, len));
+        if (hit) return hit;
+      }
+    }
+
+    // Strategy 3 — individual sentences via body.search()
+    const sentences = originalText
+      .split(/(?<=[.;])\s+/)
+      .map(s => s.trim())
+      .filter(s => s.length > 20);
+
+    for (const sentence of sentences.slice(0, 5)) {
+      const hit = await trySearch(sentence.substring(0, 120));
       if (hit) return hit;
     }
   }
 
-  // Strategy 3 — individual sentences via body.search()
-  const sentences = originalText
-    .split(/(?<=[.;])\s+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 20);
-
-  for (const sentence of sentences.slice(0, 5)) {
-    const hit = await trySearch(sentence.substring(0, 120));
-    if (hit) return hit;
-  }
-
-  // Strategy 4 — paragraph scan using JS string matching.
-  // Bypasses body.search() entirely — loads every paragraph's text and uses
-  // String.includes() which is exact and has no Word API character limits or
-  // encoding quirks. Slowest but most reliable fallback.
+  // Strategy 4 — paragraph scan. Single-para: JS fingerprint match.
+  // Multi-para: locate start + end paragraphs by fingerprint, then
+  // stitch a range across them with expandTo() so Replace/Delete covers
+  // the full clause, not just the first paragraph.
   try {
-    const norm = normalizeSearchText(originalText).toLowerCase();
-    // Use first 8 words as fingerprint — short enough to match, specific enough to locate
-    const fingerprint = norm.split(/\s+/).filter(Boolean).slice(0, 8).join(' ');
-    if (fingerprint.length >= 15) {
-      const paras = context.document.body.paragraphs;
-      paras.load('items/text');
-      await context.sync();
-      for (const para of paras.items) {
-        const paraText = normalizeSearchText(para.text).toLowerCase();
-        if (paraText.includes(fingerprint)) {
-          return para.getRange();
+    const paras = context.document.body.paragraphs;
+    paras.load('items/text');
+    await context.sync();
+
+    if (isMultiPara) {
+      const firstFp = normalizeSearchText(chunks[0]).toLowerCase()
+        .split(/\s+/).filter(Boolean).slice(0, 8).join(' ');
+      const lastFp  = normalizeSearchText(chunks[chunks.length - 1]).toLowerCase()
+        .split(/\s+/).filter(Boolean).slice(0, 6).join(' ');
+
+      if (firstFp.length >= 10) {
+        let startIdx = -1;
+        for (let i = 0; i < paras.items.length; i++) {
+          if (normalizeSearchText(paras.items[i].text).toLowerCase().includes(firstFp)) {
+            startIdx = i;
+            break;
+          }
+        }
+
+        if (startIdx >= 0) {
+          // Allow +3 paragraphs of slack beyond expected chunk count
+          const searchEnd = Math.min(paras.items.length - 1, startIdx + chunks.length + 3);
+          for (let j = startIdx + 1; j <= searchEnd; j++) {
+            if (normalizeSearchText(paras.items[j].text).toLowerCase().includes(lastFp)) {
+              return paras.items[startIdx].getRange('Start').expandTo(paras.items[j].getRange('End'));
+            }
+          }
+          // End chunk not found nearby — return just the start paragraph
+          return paras.items[startIdx].getRange();
+        }
+      }
+
+      // Multi-para fingerprint failed — fall back to body.search on first chunk only
+      const firstChunk = chunks[0];
+      for (const len of [Math.min(firstChunk.length, 200), 150, 100, 60, 40]) {
+        if (len > firstChunk.length) continue;
+        const hit = await trySearch(firstChunk.substring(0, len));
+        if (hit) return hit;
+      }
+    } else {
+      // Single-para: try multiple fingerprint windows to handle generic openers
+      // ("The Company shall not..." appears in many clauses — skip to words 4–12 too)
+      const norm = normalizeSearchText(originalText).toLowerCase();
+      const words = norm.split(/\s+/).filter(Boolean);
+      const fingerprints = [
+        words.slice(0, 8).join(' '),
+        words.length > 12 ? words.slice(4, 12).join(' ') : null,
+        words.length > 8  ? words.slice(-6).join(' ')    : null,
+      ].filter(fp => fp && fp.length >= 15);
+
+      for (const fp of fingerprints) {
+        for (const para of paras.items) {
+          if (normalizeSearchText(para.text).toLowerCase().includes(fp)) {
+            return para.getRange();
+          }
         }
       }
     }
