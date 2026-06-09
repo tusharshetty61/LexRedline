@@ -425,6 +425,26 @@ insert_mode: "after_section" or "sub_clause".
 
 insert_position_note: Plain-English one sentence shown in the task pane explaining why this position was chosen.
 
+table_index: For change_type "TableCellReplace" only — 0-based index of the table in the document. Parse from the clause section_id: "table_0" → 0, "table_1" → 1, etc. Null for all other change types.
+
+row_index: For change_type "TableCellReplace" only — 0-based row index in the table (row 0 = first row including the header; do not count the markdown separator line as a row). Null for all other change types.
+
+col_index: For change_type "TableCellReplace" only — 0-based column index. Null for all other change types.
+
+original_cell_text: For change_type "TableCellReplace" only — verbatim current content of the target cell. Null for all other change types.
+
+═══════════════════════════════════════════════════════
+TABLE CHANGE INSTRUCTIONS
+═══════════════════════════════════════════════════════
+
+When the flagged clause is a table (section_id starts with "table_"):
+- Use change_type "TableCellReplace" when a specific cell value is legally deficient (wrong cap, missing GST, incorrect rate, unenforceable term).
+- Set table_index from the numeric part of section_id (table_0 → 0).
+- Set row_index and col_index as 0-based indices into actual table rows and columns (ignore the markdown --- separator line when counting rows).
+- Set suggested_text to the replacement cell content only — not the whole table.
+- Set original_text to null. Set original_cell_text to the cell's current content verbatim.
+- For structural issues (missing column, wrong table structure) that cannot be expressed as a single cell fix: use change_type "Insert" with original_text "MISSING" and describe the required change in suggested_text as a plain-English instruction.
+
 ═══════════════════════════════════════════════════════
 OUTPUT
 ═══════════════════════════════════════════════════════
@@ -439,7 +459,11 @@ OUTPUT
   "suggested_text": "",
   "fallback_text": "",
   "negotiation_note": "",
-  "change_type": "Replace | Insert | Delete",
+  "change_type": "Replace | Insert | Delete | TableCellReplace",
+  "table_index": null,
+  "row_index": null,
+  "col_index": null,
+  "original_cell_text": null,
   "insert_anchor": null,
   "insert_mode": "after_section",
   "insert_position_note": "",
@@ -901,7 +925,9 @@ async function navigateTo(index) {
     renderClauseCard(clause, cached, index, total);
     updateNavButtons(index, total);
     showScreen('screen-clause');
-    if (cached.original_text && cached.original_text !== 'MISSING') {
+    if (cached.change_type === 'TableCellReplace') {
+      await highlightTableCell(cached, clause.priority, index);
+    } else if (cached.original_text && cached.original_text !== 'MISSING') {
       await highlightInDocument(cached.original_text, clause.priority, index);
     }
     return;
@@ -957,7 +983,9 @@ async function navigateTo(index) {
     updateNavButtons(index, total);
     showScreen('screen-clause');
 
-    if (suggestion.original_text && suggestion.original_text !== 'MISSING') {
+    if (suggestion.change_type === 'TableCellReplace') {
+      await highlightTableCell(suggestion, clause.priority, index);
+    } else if (suggestion.original_text && suggestion.original_text !== 'MISSING') {
       await highlightInDocument(suggestion.original_text, clause.priority, index);
     }
 
@@ -1132,7 +1160,9 @@ function onReject() {
   const suggestion = sessionState.suggestionCache[idx];
   if (suggestion) {
     sessionState.rejectedChanges.push(sessionState.triageJSON.clauses[idx]);
-    if (suggestion.original_text && suggestion.original_text !== 'MISSING') {
+    if (suggestion.change_type === 'TableCellReplace') {
+      clearTableCellHighlight(suggestion, idx);
+    } else if (suggestion.original_text && suggestion.original_text !== 'MISSING') {
       clearHighlight(suggestion.original_text, idx);
     }
   }
@@ -1152,10 +1182,13 @@ function onUndoDecision() {
   updateDecisionBadge(idx);
   updateStatusCounts();
   // If undoing a rejection, re-highlight the clause
-  if (prevDecision === 'rejected' && suggestion && suggestion.original_text
-      && suggestion.original_text !== 'MISSING') {
+  if (prevDecision === 'rejected' && suggestion) {
     const clause = sessionState.triageJSON.clauses[idx];
-    highlightInDocument(suggestion.original_text, clause.priority, idx);
+    if (suggestion.change_type === 'TableCellReplace') {
+      highlightTableCell(suggestion, clause.priority, idx);
+    } else if (suggestion.original_text && suggestion.original_text !== 'MISSING') {
+      highlightInDocument(suggestion.original_text, clause.priority, idx);
+    }
   }
 }
 
@@ -1222,6 +1255,42 @@ async function applyAcceptedChanges(accepted) {
           target.insertParagraph(c.suggested_text, Word.InsertLocation.before);
           target.insertComment(
             `[AI REVIEWER — NEW CLAUSE | ${c.applicable_statute || ''}] ${c.insert_position_note || c.issue_summary}`
+          );
+        }
+        continue;
+      }
+
+      // --- TableCellReplace: use Word table API directly ---
+      if (c.change_type === 'TableCellReplace') {
+        try {
+          // Try bookmark first (set at highlight time)
+          let cellRange = c.bookmarkIndex !== undefined
+            ? await getBookmarkRange(ctx, c.bookmarkIndex)
+            : null;
+
+          if (!cellRange && c.table_index != null) {
+            const tables = ctx.document.body.tables;
+            tables.load('items');
+            await ctx.sync();
+            const table = tables.items[c.table_index];
+            if (table) {
+              const cell = table.rows.getItem(c.row_index).cells.getItem(c.col_index);
+              cellRange = cell.body.getRange();
+              await ctx.sync();
+            }
+          }
+
+          if (cellRange) {
+            cellRange.insertText(c.suggested_text, Word.InsertLocation.replace);
+            cellRange.insertComment(`[AI REVIEWER | ${c.applicable_statute || ''}] ${c.issue_summary}`);
+          } else {
+            ctx.document.body.paragraphs.getLast().insertComment(
+              `[AI REVIEWER — APPLY MANUALLY]\nClause: ${c.clause_name}\n${c.issue_summary}\n\nSUGGESTED CELL VALUE:\n${c.suggested_text}`
+            );
+          }
+        } catch (e) {
+          ctx.document.body.paragraphs.getLast().insertComment(
+            `[AI REVIEWER — APPLY MANUALLY]\nClause: ${c.clause_name}\n${c.issue_summary}\n\nSUGGESTED CELL VALUE:\n${c.suggested_text}`
           );
         }
         continue;
@@ -1311,6 +1380,56 @@ async function highlightInDocument(originalText, priority, clauseIndex) {
     });
   } catch (e) {
     console.warn('Could not highlight in document:', e.message);
+  }
+}
+
+async function highlightTableCell(suggestion, priority, clauseIndex) {
+  if (suggestion.table_index == null || suggestion.row_index == null || suggestion.col_index == null) return;
+  try {
+    await Word.run(async (context) => {
+      const tables = context.document.body.tables;
+      tables.load('items');
+      await context.sync();
+      const table = tables.items[suggestion.table_index];
+      if (!table) return;
+      const cell = table.rows.getItem(suggestion.row_index).cells.getItem(suggestion.col_index);
+      const range = cell.body.getRange();
+      const p = (priority || 'HIGH').toUpperCase();
+      range.font.highlightColor = PRIORITY_HIGHLIGHT[p] || 'Yellow';
+      range.select();
+      if (clauseIndex !== undefined) {
+        range.insertBookmark(`${BOOKMARK_PREFIX}${clauseIndex}`);
+      }
+      await context.sync();
+    });
+  } catch (e) {
+    console.warn('Could not highlight table cell:', e.message);
+  }
+}
+
+async function clearTableCellHighlight(suggestion, clauseIndex) {
+  try {
+    await Word.run(async (context) => {
+      let range = clauseIndex !== undefined
+        ? await getBookmarkRange(context, clauseIndex)
+        : null;
+      if (!range && suggestion.table_index != null) {
+        const tables = context.document.body.tables;
+        tables.load('items');
+        await context.sync();
+        const table = tables.items[suggestion.table_index];
+        if (!table) return;
+        const cell = table.rows.getItem(suggestion.row_index).cells.getItem(suggestion.col_index);
+        range = cell.body.getRange();
+        await context.sync();
+      }
+      if (range) {
+        range.font.highlightColor = 'None';
+        await context.sync();
+      }
+    });
+  } catch (e) {
+    // non-fatal
   }
 }
 
