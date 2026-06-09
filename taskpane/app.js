@@ -1384,6 +1384,20 @@ async function findRange(context, originalText) {
     }
   }
 
+  // When a prefix shorter than the full text locates the clause, expand the
+  // returned range to the full containing paragraph so highlight and Replace/Delete
+  // cover the entire clause, not just the matched prefix.
+  async function expandToPara(range) {
+    try {
+      const paras = range.paragraphs;
+      paras.load('items');
+      await context.sync();
+      return paras.items[0].getRange();
+    } catch (e) {
+      return range;
+    }
+  }
+
   // Split on paragraph/line breaks to detect multi-paragraph original_text.
   // body.search() cannot cross paragraph marks, so multi-para text needs
   // a different strategy from the start.
@@ -1395,7 +1409,7 @@ async function findRange(context, originalText) {
     for (const len of [originalText.length, 200, 150, 100, 60, 40]) {
       if (len > originalText.length) continue;
       const hit = await trySearch(originalText.substring(0, len));
-      if (hit) return hit;
+      if (hit) return len < originalText.length ? await expandToPara(hit) : hit;
     }
 
     // Strategy 2 — strip leading clause number ("8.    " etc.) and retry.
@@ -1404,7 +1418,7 @@ async function findRange(context, originalText) {
       for (const len of [Math.min(stripped.length, 200), 150, 100, 60, 40]) {
         if (len > stripped.length) continue;
         const hit = await trySearch(stripped.substring(0, len));
-        if (hit) return hit;
+        if (hit) return len < stripped.length ? await expandToPara(hit) : hit;
       }
     }
 
@@ -1416,7 +1430,7 @@ async function findRange(context, originalText) {
 
     for (const sentence of sentences.slice(0, 5)) {
       const hit = await trySearch(sentence.substring(0, 120));
-      if (hit) return hit;
+      if (hit) return await expandToPara(hit);
     }
   }
 
