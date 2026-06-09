@@ -1372,12 +1372,16 @@ async function findRange(context, originalText) {
     if (!candidate || candidate.trim().length < 10) return null;
     const normalized = normalizeSearchText(candidate);
     if (normalized.length < 10) return null;
-    const results = context.document.body.search(normalized, {
-      matchCase: false, matchWholeWord: false, ignoreSpace: true, ignorePunct: true
-    });
-    results.load('items');
-    await context.sync();
-    return results.items.length > 0 ? results.items[0] : null;
+    try {
+      const results = context.document.body.search(normalized, {
+        matchCase: false, matchWholeWord: false, ignoreSpace: true, ignorePunct: true
+      });
+      results.load('items');
+      await context.sync();
+      return results.items.length > 0 ? results.items[0] : null;
+    } catch (e) {
+      return null; // body.search() throws on >255 chars in some Word versions
+    }
   }
 
   // Split on paragraph/line breaks to detect multi-paragraph original_text.
