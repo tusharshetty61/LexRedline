@@ -373,7 +373,7 @@ DRAFT ORIGIN INSTRUCTIONS:
 
 PENDING CHANGES: Review the pending_changes list. If any accepted change affects the risk profile of the current clause (e.g. a deleted non-compete shifts post-term restraint weight to the confidentiality clause), set downstream_impact to a plain-English explanation. Set to null if no dependency exists.
 
-MISSING CLAUSE INSERTION: For change_type "Insert", set insert_anchor to a verbatim heading string from section_manifest — find where this clause type appears in baseline_sections, identify its predecessor section, then map to the nearest matching heading in section_manifest. Set insert_mode to "after_section" or "sub_clause". Set insert_position_note to a plain-English sentence explaining the placement.
+MISSING CLAUSE INSERTION: For change_type "Insert", set insert_anchor to the verbatim text of the paragraph immediately above where the new clause should be inserted. Use the document text and section_manifest to identify the best insertion point, then copy the exact text of the last paragraph or line before that point. Prefer a section heading or short unique sentence that can be unambiguously located by text search in the document. The new clause will be appended directly below whichever paragraph matches insert_anchor. Set insert_position_note to a plain-English sentence explaining the placement.
 
 Temperature is set to 0. Be deterministic. Return only valid JSON. No preamble or explanation outside the JSON object.
 
@@ -419,9 +419,7 @@ downstream_impact: Non-null string if any accepted pending_change affects the ri
 
 undefined_terms_used: Array of objects { term, suggested_definition } for any term in suggested_text or fallback_text not found in defined_terms. Empty array [] if all terms are defined.
 
-insert_anchor: For change_type "Insert" only — verbatim heading string from section_manifest after which to insert. Null if no suitable anchor exists.
-
-insert_mode: "after_section" or "sub_clause".
+insert_anchor: For change_type "Insert" only — verbatim text of the paragraph immediately above the intended insertion point. The new clause is appended directly below the matched paragraph. Prefer a section heading or unique short sentence that can be found unambiguously by text search. Null if no suitable anchor exists.
 
 insert_position_note: Plain-English one sentence shown in the task pane explaining why this position was chosen.
 
@@ -465,7 +463,6 @@ OUTPUT
   "col_index": null,
   "original_cell_text": null,
   "insert_anchor": null,
-  "insert_mode": "after_section",
   "insert_position_note": "",
   "downstream_impact": null,
   "undefined_terms_used": [],
@@ -1250,9 +1247,9 @@ async function applyAcceptedChanges(accepted) {
 
     for (const c of ordered) {
       if (c.change_type === 'Insert' || c.original_text === 'MISSING') {
-        const target = await resolveInsertionAnchor(c, ctx);
+        const { target, location } = await resolveInsertionAnchor(c, ctx);
         if (target) {
-          target.insertParagraph(c.suggested_text, Word.InsertLocation.before);
+          target.insertParagraph(c.suggested_text, location);
           target.insertComment(
             `[AI REVIEWER — NEW CLAUSE | ${c.applicable_statute || ''}] ${c.insert_position_note || c.issue_summary}`
           );
@@ -1329,21 +1326,29 @@ async function applyAcceptedChanges(accepted) {
 }
 
 async function resolveInsertionAnchor(change, ctx) {
-  const anchorsToTry = [];
-  if (change.insert_anchor) anchorsToTry.push(change.insert_anchor);
-  anchorsToTry.push('IN WITNESS WHEREOF');
-
-  for (const anchor of anchorsToTry) {
-    const results = ctx.document.body.search(anchor, { matchCase: false });
+  // Primary: AI-supplied verbatim paragraph above insertion point → insert after it
+  if (change.insert_anchor) {
+    const results = ctx.document.body.search(change.insert_anchor, { matchCase: false });
     results.load('items');
     await ctx.sync();
-    if (results.items.length > 0) return results.items[0];
+    if (results.items.length > 0) {
+      return { target: results.items[0], location: Word.InsertLocation.after };
+    }
   }
 
+  // Fallback: signature block → insert before it so the clause lands above signatures
+  const sig = ctx.document.body.search('IN WITNESS WHEREOF', { matchCase: false });
+  sig.load('items');
+  await ctx.sync();
+  if (sig.items.length > 0) {
+    return { target: sig.items[0], location: Word.InsertLocation.before };
+  }
+
+  // Last resort: end of document
   const paras = ctx.document.body.paragraphs;
   paras.load('items');
   await ctx.sync();
-  return paras.getLast();
+  return { target: paras.getLast(), location: Word.InsertLocation.after };
 }
 
 
