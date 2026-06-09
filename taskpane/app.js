@@ -358,9 +358,10 @@ You will receive:
 2. A single clause object from the triage JSON — including clause_text (verbatim from document)
 3. Optionally: conversation_history if the lawyer has asked follow-up questions
 4. pending_changes: a list of changes already accepted in this review session — check if any affect the risk profile of this clause
-5. section_manifest: the actual section headings from the document (use verbatim headings for insert_anchor)
+5. section_manifest: the actual section headings found in the document
 6. baseline_sections: the standard baseline for this agreement type
 7. defined_terms: list of defined terms extracted from the Definitions clause
+8. document_text: the full text of the agreement — provided only for Missing Clause issues; use this to identify a verbatim anchor paragraph for insert_anchor
 
 All advice is governed by Indian law. Cite specific Indian statutes, rules, and leading cases where relevant.
 
@@ -373,7 +374,7 @@ DRAFT ORIGIN INSTRUCTIONS:
 
 PENDING CHANGES: Review the pending_changes list. If any accepted change affects the risk profile of the current clause (e.g. a deleted non-compete shifts post-term restraint weight to the confidentiality clause), set downstream_impact to a plain-English explanation. Set to null if no dependency exists.
 
-MISSING CLAUSE INSERTION: For change_type "Insert", set insert_anchor to the verbatim text of the paragraph immediately above where the new clause should be inserted. Use the document text and section_manifest to identify the best insertion point, then copy the exact text of the last paragraph or line before that point. Prefer a section heading or short unique sentence that can be unambiguously located by text search in the document. The new clause will be appended directly below whichever paragraph matches insert_anchor. Set insert_position_note to a plain-English sentence explaining the placement.
+MISSING CLAUSE INSERTION: For change_type "Insert", set insert_anchor to the verbatim text of the paragraph immediately above where the new clause should be inserted. You are provided document_text — the full agreement text. Read it to identify the correct insertion point: determine where this missing clause type should logically sit (use baseline_sections for ordering), then find the last paragraph that appears before that position in the document. Copy that paragraph's text exactly as it appears in document_text. Prefer a section heading or short unique sentence over a long paragraph, so it can be found unambiguously by text search. Do NOT use the document title or any paragraph from the signature block as the anchor. The new clause will be appended directly below whichever paragraph matches insert_anchor. Set insert_position_note to a plain-English sentence explaining the placement.
 
 Temperature is set to 0. Be deterministic. Return only valid JSON. No preamble or explanation outside the JSON object.
 
@@ -407,7 +408,7 @@ legal_analysis: Detailed legal reasoning. Cite statutes by section number. Refer
 
 original_text: Verbatim text from the agreement exactly as it appears — copied directly from clause_text. Used for string search in Word to locate the text for replacement. If only part of the clause needs changing (a sub-sentence), quote only that specific part verbatim. Do not paraphrase, summarise, or truncate mid-sentence. For missing clauses: set to "MISSING".
 
-suggested_text: Complete replacement clause, ready to insert. For missing clauses: complete draft clause. For deletions: set to "DELETE".
+suggested_text: Complete replacement clause, ready to insert. For missing clauses: complete draft clause body only — do not include a section heading, clause number, or title prefix. For deletions: set to "DELETE".
 
 fallback_text: A middle-ground version the client could accept if the counterparty resists. Must still be legally sound. If no meaningful fallback exists, state why.
 
@@ -938,6 +939,7 @@ async function navigateTo(index) {
     const seg = resolveSegment(clause);
     const verbatimText = seg ? seg.text : null;
 
+    const isMissingClause = clause.clause_text === 'MISSING' || clause.issue_category === 'Missing Clause';
     const call3Payload = JSON.stringify({
       classification: sessionState.classificationJSON,
       clause: seg
@@ -949,7 +951,8 @@ async function navigateTo(index) {
       pending_changes: Object.values(sessionState.pendingChanges),
       section_manifest: sessionState.sectionManifest,
       baseline_sections: sessionState.activeBaseline,
-      defined_terms: sessionState.definedTerms
+      defined_terms: sessionState.definedTerms,
+      ...(isMissingClause && { document_text: sessionState.documentText })
     });
 
     const messages = [{ role: 'user', content: call3Payload }];
@@ -1658,7 +1661,8 @@ async function onAskAI() {
           pending_changes: Object.values(sessionState.pendingChanges),
           section_manifest: sessionState.sectionManifest,
           baseline_sections: sessionState.activeBaseline,
-          defined_terms: sessionState.definedTerms
+          defined_terms: sessionState.definedTerms,
+          ...((clause.clause_text === 'MISSING' || clause.issue_category === 'Missing Clause') && { document_text: sessionState.documentText })
         })
       },
       ...sessionState.conversationHistory
