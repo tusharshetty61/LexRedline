@@ -971,6 +971,9 @@ async function navigateTo(index) {
         && suggestion.change_type !== 'Insert') {
       suggestion.original_text = stripClauseNumber(suggestion.original_text);
     }
+    if (suggestion.insert_anchor) {
+      suggestion.insert_anchor = stripClauseNumber(suggestion.insert_anchor);
+    }
 
     sessionState.suggestionCache[index] = suggestion;
     sessionState.conversationHistory = [
@@ -1331,21 +1334,13 @@ async function applyAcceptedChanges(accepted) {
 async function resolveInsertionAnchor(change, ctx) {
   // Primary: AI-supplied verbatim paragraph above insertion point → insert after it
   if (change.insert_anchor) {
-    const results = ctx.document.body.search(change.insert_anchor, { matchCase: false });
-    results.load('items');
-    await ctx.sync();
-    if (results.items.length > 0) {
-      return { target: results.items[0], location: Word.InsertLocation.after };
-    }
+    const hit = await findRange(ctx, change.insert_anchor);
+    if (hit) return { target: hit, location: Word.InsertLocation.after };
   }
 
   // Fallback: signature block → insert before it so the clause lands above signatures
-  const sig = ctx.document.body.search('IN WITNESS WHEREOF', { matchCase: false });
-  sig.load('items');
-  await ctx.sync();
-  if (sig.items.length > 0) {
-    return { target: sig.items[0], location: Word.InsertLocation.before };
-  }
+  const sigHit = await findRange(ctx, 'IN WITNESS WHEREOF');
+  if (sigHit) return { target: sigHit, location: Word.InsertLocation.before };
 
   // Last resort: end of document
   const paras = ctx.document.body.paragraphs;
@@ -1678,6 +1673,9 @@ async function onAskAI() {
     if (updated.original_text && updated.original_text !== 'MISSING'
         && updated.change_type !== 'Insert') {
       updated.original_text = stripClauseNumber(updated.original_text);
+    }
+    if (updated.insert_anchor) {
+      updated.insert_anchor = stripClauseNumber(updated.insert_anchor);
     }
 
     // Reset cache entry so back-navigation shows updated suggestion
